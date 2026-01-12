@@ -1,0 +1,63 @@
+# WordPress
+.htaccess
+wp-config.php
+wp-content/uploads/
+wp-content/blogs.dir/
+wp-content/upgrade/
+wp-content/backup-db/
+wp-content/advanced-cache.php
+wp-content/wp-cache-config.php
+wp-content/cache/
+wp-content/cache/supercache/
+
+# OS Files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE Files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# Logs
+*.log
+error_log
+debug.log
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Package managers
+node_modules/
+vendor/
+composer.lock
+package-lock.json
+
+# Build files
+*.zip
+*.tar.gz
+*.rar
+
+# PHPStorm
+.phpstorm.meta.php
+
+# Testing
+/tests/
+phpunit.xml
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Documentation build files
+/dcs/*.xlsx
+/dcs/*.pdf
+!/dcs/zestawienie-ksiegowosc/Zestawienie transakcji 2025.05.xlsx

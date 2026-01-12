@@ -1,0 +1,227 @@
+/**
+ * Style administracyjne dla PhotoJob Organizer
+ *
+ * @package PhotoJob_Organizer
+ */
+
+/* Ogólne style dla kart */
+.photojob-card {
+    background: #fff;
+    border: 1px solid #ccd0d4;
+    border-radius: 4px;
+    padding: 20px;
+    margin-bottom: 20px;
+    box-shadow: 0 1px 1px rgba(0,0,0,.04);
+}
+
+.photojob-card h2 {
+    margin-top: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+/* Style dla formularzy */
+.photojob-form-table {
+    max-width: 800px;
+}
+
+.photojob-form-table th {
+    width: 200px;
+    font-weight: 600;
+}
+
+.photojob-form-table input[type="date"],
+.photojob-form-table input[type="text"],
+.photojob-form-table select {
+    min-width: 300px;
+}
+
+.photojob-form-table .description {
+    color: #646970;
+    font-size: 13px;
+    font-style: italic;
+    margin-top: 5px;
+}
+
+/* Style dla przycisków */
+.photojob-button-primary {
+    background: #2271b1;
+    border-color: #2271b1;
+    color: #fff;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.photojob-button-primary:hover {
+    background: #135e96;
+    border-color: #135e96;
+    color: #fff;
+}
+
+/* Style dla dashicon w przyciskach */
+.button .dashicons {
+    margin-top: 3px;
+}
+
+/* Style dla list */
+.photojob-feature-list {
+    list-style: none;
+    padding-left: 0;
+}
+
+.photojob-feature-list li {
+    padding: 10px 0;
+    border-bottom: 1px solid #eee;
+}
+
+.photojob-feature-list li:last-child {
+    border-bottom: none;
+}
+
+.photojob-feature-list strong {
+    display: block;
+    margin-bottom: 5px;
+    color: #1d2327;
+}
+
+/* Style dla statusów */
+.photojob-status-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.photojob-status-indicator.success {
+    color: #00a32a;
+}
+
+.photojob-status-indicator.error {
+    color: #d63638;
+}
+
+.photojob-status-indicator.warning {
+    color: #dba617;
+}
+
+/* Style dla tabel danych */
+.photojob-data-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+.photojob-data-table th,
+.photojob-data-table td {
+    padding: 12px;
+    text-align: left;
+    border-bottom: 1px solid #dcdcde;
+}
+
+.photojob-data-table th {
+    background: #f6f7f7;
+    font-weight: 600;
+    color: #1d2327;
+}
+
+.photojob-data-table tbody tr:hover {
+    background: #f6f7f7;
+}
+
+/* Style dla podsumowań */
+.photojob-summary {
+    background: #f0f6fc;
+    border-left: 4px solid #2271b1;
+    padding: 15px 20px;
+    margin-top: 20px;
+}
+
+.photojob-summary h3 {
+    margin-top: 0;
+    color: #2271b1;
+}
+
+.photojob-summary-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 5px 0;
+    border-bottom: 1px solid #c3dcf3;
+}
+
+.photojob-summary-item:last-child {
+    border-bottom: none;
+    font-weight: 600;
+    font-size: 14px;
+    padding-top: 10px;
+}
+
+.photojob-summary-label {
+    color: #1d2327;
+}
+
+.photojob-summary-value {
+    color: #2271b1;
+    font-weight: 600;
+}
+
+/* Responsywność */
+@media screen and (max-width: 782px) {
+    .photojob-form-table th,
+    .photojob-form-table td {
+        display: block;
+        width: 100%;
+    }
+
+    .photojob-form-table th {
+        padding-bottom: 5px;
+    }
+
+    .photojob-form-table input[type="date"],
+    .photojob-form-table input[type="text"],
+    .photojob-form-table select {
+        min-width: 100%;
+        width: 100%;
+    }
+}
+
+/* Animacje ładowania */
+.photojob-loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #2271b1;
+    border-radius: 50%;
+    animation: photojob-spin 1s linear infinite;
+}
+
+@keyframes photojob-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Style dla powiadomień */
+.photojob-notice {
+    padding: 12px;
+    margin: 20px 0;
+    border-left: 4px solid;
+}
+
+.photojob-notice.success {
+    background: #ecf7ed;
+    border-color: #00a32a;
+    color: #1d2327;
+}
+
+.photojob-notice.error {
+    background: #fcf0f1;
+    border-color: #d63638;
+    color: #1d2327;
+}
+
+.photojob-notice.info {
+    background: #f0f6fc;
+    border-color: #2271b1;
+    color: #1d2327;
+}
