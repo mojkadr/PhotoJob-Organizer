@@ -166,6 +166,11 @@ W przypadku problemów lub pytań:
 
 ## Changelog
 
+### 1.0.1 (2026-01-13)
+- 🐛 **POPRAWKA**: Naprawiono problem z pobieraniem raportu Excel
+- Raport Excel (.xlsx) teraz pobiera się poprawnie po kliknięciu "Pobierz raport"
+- Poprawiono inicjalizację obsługi żądań eksportu w admin_init
+
 ### 1.0.0 (2026-01-12)
 - Pierwsze wydanie
 - Funkcja generowania raportu księgowego
