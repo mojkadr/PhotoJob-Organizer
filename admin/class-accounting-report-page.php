@@ -34,18 +34,14 @@ class PhotoJob_Accounting_Report_Page {
      * Konstruktor
      */
     private function __construct() {
-        add_action( 'admin_init', array( $this, 'handle_export_request' ) );
+        // Użyj admin_post_ hook dla obsługi akcji POST
+        add_action( 'admin_post_photojob_export_accounting', array( $this, 'handle_export_request' ) );
     }
 
     /**
      * Obsłuż żądanie eksportu
      */
     public function handle_export_request() {
-        // Sprawdź czy to żądanie eksportu
-        if ( ! isset( $_POST['photojob_export_accounting'] ) ) {
-            return;
-        }
-
         // Weryfikacja nonce
         if ( ! isset( $_POST['photojob_accounting_nonce'] ) ||
              ! wp_verify_nonce( $_POST['photojob_accounting_nonce'], 'photojob_export_accounting' ) ) {
@@ -162,7 +158,8 @@ class PhotoJob_Accounting_Report_Page {
                 <h2><?php _e( 'Generuj zestawienie transakcji', 'photojob-organizer' ); ?></h2>
                 <p><?php _e( 'Wybierz zakres dat, aby wygenerować raport księgowy z zamówień.', 'photojob-organizer' ); ?></p>
 
-                <form method="post" action="">
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                    <input type="hidden" name="action" value="photojob_export_accounting">
                     <?php wp_nonce_field( 'photojob_export_accounting', 'photojob_accounting_nonce' ); ?>
 
                     <table class="form-table">

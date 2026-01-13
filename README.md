@@ -166,10 +166,23 @@ W przypadku problemów lub pytań:
 
 ## Changelog
 
+### 1.0.3 (2026-01-14)
+- 🐛 **POPRAWKA KRYTYCZNA**: Naprawiono pobieranie raportu Excel
+- Zmieniono mechanizm obsługi eksportu na WordPress admin_post_ hook
+- Formularz wysyła teraz dane do admin-post.php zamiast do tej samej strony
+- Raport Excel (.xlsx) teraz na pewno pobiera się poprawnie po kliknięciu "Pobierz raport"
+
+### 1.0.2 (2026-01-14)
+- 🐛 **POPRAWKA KRYTYCZNA**: Naprawiono błąd instalacji wtyczki
+- Poprawiono strukturę archiwum ZIP (pliki teraz w folderze photojob-organizer/)
+- Zmieniono sposób inicjalizacji modułów admin (używa hooka plugins_loaded)
+- ⚠️ UWAGA: Pobieranie raportu nadal nie działa - użyj wersji 1.0.3
+
 ### 1.0.1 (2026-01-13)
 - 🐛 **POPRAWKA**: Naprawiono problem z pobieraniem raportu Excel
 - Raport Excel (.xlsx) teraz pobiera się poprawnie po kliknięciu "Pobierz raport"
 - Poprawiono inicjalizację obsługi żądań eksportu w admin_init
+- ⚠️ UWAGA: Ta wersja ma nieprawidłową strukturę ZIP - użyj wersji 1.0.2
 
 ### 1.0.0 (2026-01-12)
 - Pierwsze wydanie

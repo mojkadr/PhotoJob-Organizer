@@ -3,7 +3,7 @@
  * Plugin Name: PhotoJob Organizer
  * Plugin URI: https://github.com/yourusername/photojob-organizer
  * Description: Narzędzie do organizacji zamówień fotograficznych i generowania raportów księgowych
- * Version: 1.0.1
+ * Version: 1.0.3
  * Author: Twoje Imię
  * Author URI: https://yourwebsite.com
  * License: GPL v2 or later
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Definicje stałych
-define( 'PHOTOJOB_VERSION', '1.0.1' );
+define( 'PHOTOJOB_VERSION', '1.0.3' );
 define( 'PHOTOJOB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -73,8 +73,14 @@ class PhotoJob_Organizer {
      */
     private function init_hooks() {
         add_action( 'plugins_loaded', array( $this, 'check_requirements' ) );
+        add_action( 'plugins_loaded', array( $this, 'init_admin_modules' ) );
         add_action( 'init', array( $this, 'load_textdomain' ) );
+    }
 
+    /**
+     * Inicjalizuj moduły administracyjne
+     */
+    public function init_admin_modules() {
         if ( is_admin() ) {
             PhotoJob_Admin_Menu::get_instance();
             PhotoJob_Accounting_Report_Page::get_instance();
