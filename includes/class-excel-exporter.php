@@ -79,79 +79,85 @@ class PhotoJob_Excel_Exporter {
     }
 
     /**
-     * Eksportuj do formatu CSV z rozszerzeniem .xlsx
-     * To rozwiązanie działa bez dodatkowych bibliotek
+     * Eksportuj do formatu XLSX używając SimpleXLSXGen
      *
      * @param array $table_data Dane tabeli
      * @param array $company_info Informacje o firmie
      * @return void
      */
     private function export_to_csv_as_xlsx( $table_data, $company_info ) {
+        // Załaduj bibliotekę SimpleXLSXGen
+        require_once dirname( __FILE__ ) . '/simplexlsxgen.php';
+
         // Przygotuj nazwę pliku
         $date_from = isset( $table_data['summary']['date_from'] ) ? $table_data['summary']['date_from'] : '';
         $date_to = isset( $table_data['summary']['date_to'] ) ? $table_data['summary']['date_to'] : '';
 
         $filename = 'Zestawienie-transakcji-' . $date_from . '-' . $date_to . '.xlsx';
 
-        // Ustaw nagłówki HTTP dla pobierania pliku
-        header( 'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' );
-        header( 'Content-Disposition: attachment; filename="' . $filename . '"' );
-        header( 'Cache-Control: max-age=0' );
-        header( 'Pragma: public' );
-
-        // Otwórz strumień wyjściowy
-        $output = fopen( 'php://output', 'w' );
-
-        // BOM dla UTF-8 (żeby Excel poprawnie odczytał polskie znaki)
-        fprintf( $output, chr(0xEF).chr(0xBB).chr(0xBF) );
+        // Przygotuj dane do eksportu
+        $data = array();
 
         // Dodaj informacje o firmie
         if ( ! empty( $company_info ) ) {
             if ( isset( $company_info['name'] ) ) {
-                fputcsv( $output, array( '', $company_info['name'] ), ';' );
+                $data[] = array( '', '<b>' . $company_info['name'] . '</b>' );
             }
             if ( isset( $company_info['address'] ) ) {
-                fputcsv( $output, array( '', $company_info['address'] ), ';' );
+                $data[] = array( '', $company_info['address'] );
             }
             if ( isset( $company_info['nip'] ) ) {
-                fputcsv( $output, array( '', 'NIP: ' . $company_info['nip'] ), ';' );
+                $data[] = array( '', 'NIP: ' . $company_info['nip'] );
             }
 
             // Dodaj miesiąc
             $month_name = $this->get_month_name( $date_from );
-            fputcsv( $output, array( '', 'Miesiąc: ' . $month_name ), ';' );
+            $data[] = array( '', '<b>Miesiąc: ' . $month_name . '</b>' );
 
-            // Pusta linia
-            fputcsv( $output, array(), ';' );
-            fputcsv( $output, array(), ';' );
+            // Puste linie
+            $data[] = array();
+            $data[] = array();
         }
 
-        // Dodaj nagłówki tabeli
+        // Dodaj nagłówki tabeli (pogrubione)
         if ( isset( $table_data['headers'] ) ) {
-            fputcsv( $output, $table_data['headers'], ';' );
+            $headers = array();
+            foreach ( $table_data['headers'] as $header ) {
+                $headers[] = '<b>' . $header . '</b>';
+            }
+            $data[] = $headers;
         }
 
         // Dodaj wiersze danych
         if ( isset( $table_data['rows'] ) ) {
             foreach ( $table_data['rows'] as $row ) {
-                fputcsv( $output, $row, ';' );
+                $data[] = $row;
             }
         }
 
         // Dodaj pustą linię przed podsumowaniem
-        fputcsv( $output, array(), ';' );
+        $data[] = array();
 
         // Dodaj podsumowanie
         if ( isset( $table_data['summary'] ) ) {
             $summary = $table_data['summary'];
 
-            fputcsv( $output, array( '', 'PODSUMOWANIE' ), ';' );
-            fputcsv( $output, array( '', 'Liczba zamówień: ' . $summary['total_orders'] ), ';' );
-            fputcsv( $output, array( '', 'Suma przychodu netto: ' . $summary['total_net_revenue'] . ' zł' ), ';' );
-            fputcsv( $output, array( '', 'Zakres dat: ' . $summary['date_from'] . ' - ' . $summary['date_to'] ), ';' );
+            $data[] = array( '', '<b>PODSUMOWANIE</b>' );
+            $data[] = array( '', 'Liczba zamówień: ' . $summary['total_orders'] );
+            $data[] = array( '', 'Suma przychodu netto: ' . $summary['total_net_revenue'] . ' zł' );
+            $data[] = array( '', 'Zakres dat: ' . $summary['date_from'] . ' - ' . $summary['date_to'] );
         }
 
-        fclose( $output );
+        // Utwórz plik Excel
+        try {
+            $xlsx = \Shuchkin\SimpleXLSXGen::fromArray( $data );
+            $xlsx->setAuthor( isset( $company_info['name'] ) ? $company_info['name'] : 'PhotoJob Organizer' );
+            $xlsx->setTitle( 'Zestawienie transakcji ' . $date_from . ' - ' . $date_to );
+            $xlsx->download( $filename );
+        } catch ( Exception $e ) {
+            wp_die( 'Błąd podczas generowania pliku Excel: ' . $e->getMessage() );
+        }
+
         exit;
     }
 

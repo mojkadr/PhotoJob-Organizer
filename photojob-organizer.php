@@ -3,7 +3,7 @@
  * Plugin Name: PhotoJob Organizer
  * Plugin URI: https://github.com/yourusername/photojob-organizer
  * Description: Narzędzie do organizacji zamówień fotograficznych i generowania raportów księgowych
- * Version: 1.0.3
+ * Version: 1.0.5
  * Author: Twoje Imię
  * Author URI: https://yourwebsite.com
  * License: GPL v2 or later
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Definicje stałych
-define( 'PHOTOJOB_VERSION', '1.0.3' );
+define( 'PHOTOJOB_VERSION', '1.0.5' );
 define( 'PHOTOJOB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );

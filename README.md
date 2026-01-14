@@ -166,11 +166,19 @@ W przypadku problemów lub pytań:
 
 ## Changelog
 
+### 1.0.5 (2026-01-14)
+- 🐛 **POPRAWKA KRYTYCZNA**: Naprawiono format pliku Excel XLSX
+- Dodano bibliotekę SimpleXLSXGen do generowania prawdziwych plików Excel
+- Plik Excel (.xlsx) teraz otwiera się poprawnie w Microsoft Excel
+- Poprzednio: generowany był plik CSV z rozszerzeniem .xlsx
+- Teraz: generowany jest prawdziwy plik XLSX z formatowaniem
+
 ### 1.0.3 (2026-01-14)
 - 🐛 **POPRAWKA KRYTYCZNA**: Naprawiono pobieranie raportu Excel
 - Zmieniono mechanizm obsługi eksportu na WordPress admin_post_ hook
 - Formularz wysyła teraz dane do admin-post.php zamiast do tej samej strony
 - Raport Excel (.xlsx) teraz na pewno pobiera się poprawnie po kliknięciu "Pobierz raport"
+- ⚠️ UWAGA: Plik miał nieprawidłowy format - użyj wersji 1.0.5
 
 ### 1.0.2 (2026-01-14)
 - 🐛 **POPRAWKA KRYTYCZNA**: Naprawiono błąd instalacji wtyczki

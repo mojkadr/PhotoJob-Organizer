@@ -134,7 +134,8 @@ PhotoJob-Organizer/
 │   ├── photojob-organizer-1.0.1.zip    # Pierwsza próba naprawy (zła struktura ZIP)
 │   ├── photojob-organizer-1.0.2.zip    # Naprawa struktury ZIP
 │   ├── photojob-organizer-1.0.3.zip    # Naprawa mechanizmu POST (bez folderu - błąd!)
-│   └── photojob-organizer-1.0.4.zip    # Z folderem (aktualna wersja testowa)
+│   ├── photojob-organizer-1.0.4.zip    # Z folderem (problem z formatem Excel)
+│   └── photojob-organizer-1.0.5.zip    # AKTUALNA - naprawiony format Excel
 ├── README.md
 └── DEVELOPMENT_LOG.md                   # Ten plik
 ```
@@ -143,9 +144,18 @@ PhotoJob-Organizer/
 
 ## Changelog Wersji
 
+### v1.0.5 (2026-01-14) - AKTUALNA
+- 🐛 **NAPRAWIONO**: Błąd formatu pliku Excel XLSX
+- Dodano bibliotekę SimpleXLSXGen (pojedynczy plik PHP, bez Composer)
+- Plik Excel (.xlsx) teraz otwiera się poprawnie w Microsoft Excel
+- Poprzednio: generowany był plik CSV z rozszerzeniem .xlsx (Excel nie mógł otworzyć)
+- Teraz: generowany jest prawdziwy plik XLSX z formatowaniem XML w ZIP
+- Struktura ZIP: z folderem photojob-organizer/ (zgodna z WordPress)
+
 ### v1.0.4 (2026-01-14) - TESTOWA
 - Przywrócono strukturę ZIP z folderem photojob-organizer/
 - Bez zmian w kodzie względem 1.0.3
+- ⚠️ Problem z formatem Excel - użyj wersji 1.0.5
 
 ### v1.0.3 (2026-01-14) - PROBLEMATYCZNA
 - 🐛 Zmieniono mechanizm eksportu na `admin_post_` hook
@@ -328,14 +338,47 @@ unzip -l releases/photojob-organizer-X.Y.Z.zip
 
 ---
 
+## Sesja 2: Naprawa Formatu Excel (2026-01-14)
+
+### Problem: Excel nie może otworzyć pliku XLSX
+**Objaw:** "Program Excel nie może otworzyć pliku ze względu na nieprawidłowy format lub rozszerzenie pliku"
+
+**Diagnoza:**
+- Funkcja `export_to_csv_as_xlsx()` używała `fputcsv()` (format CSV)
+- Ale deklarowała Content-Type jako `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`
+- Excel próbował otworzyć plik jako prawdziwy XLSX (ZIP z XML), ale otrzymał CSV
+- Plik był CSV z rozszerzeniem .xlsx - to nie działa!
+
+**Rozwiązanie v1.0.5:**
+1. Pobranie biblioteki SimpleXLSXGen (pojedynczy plik PHP, MIT license)
+2. Dodanie `includes/simplexlsxgen.php`
+3. Przepisanie `export_to_csv_as_xlsx()` aby używała SimpleXLSXGen
+4. Teraz generowany jest prawdziwy plik Excel XLSX z formatowaniem
+
+**Plik:** `includes/class-excel-exporter.php:88-162`
+
+```php
+// Poprzednio (BŁĄD):
+fputcsv( $output, $row, ';' );  // CSV
+header( 'Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' );
+
+// Teraz (POPRAWNIE):
+require_once dirname( __FILE__ ) . '/simplexlsxgen.php';
+$xlsx = \Shuchkin\SimpleXLSXGen::fromArray( $data );
+$xlsx->download( $filename );
+```
+
+**Status:** ✅ NAPRAWIONE - plik Excel teraz otwiera się poprawnie
+
+---
+
 ## Następne Kroki (TODO)
 
-1. 🔴 **PILNE:** Uzyskać szczegóły błędu instalacji od użytkownika
-2. 🔴 **PILNE:** Sprawdzić czy WooCommerce jest zainstalowane
-3. 🟡 Przetestować instalację wtyczki na czystym WordPress + WooCommerce
-4. 🟡 Przetestować eksport Excel po instalacji
-5. 🟢 Rozważyć dodanie lepszego error handlingu
-6. 🟢 Rozważyć dodanie logowania błędów do pliku
+1. ✅ ~~Naprawić format pliku Excel~~ (DONE w v1.0.5)
+2. 🟢 Przetestować instalację wtyczki na czystym WordPress + WooCommerce
+3. 🟢 Przetestować eksport Excel po instalacji
+4. 🟢 Rozważyć dodanie lepszego error handlingu
+5. 🟢 Rozważyć dodanie logowania błędów do pliku
 
 ---
 

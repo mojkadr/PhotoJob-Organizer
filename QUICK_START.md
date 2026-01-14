@@ -3,18 +3,15 @@
 ## Aktualna Sytuacja (2026-01-14)
 
 ### Status
-⚠️ **DEBUGGING** - Wtyczka ma problemy z instalacją
+✅ **NAPRAWIONE** - Błąd formatu pliku Excel został naprawiony
 
 ### Aktualna Wersja
-**v1.0.4** (testowa) - `releases/photojob-organizer-1.0.4.zip`
+**v1.0.5** (stabilna) - `releases/photojob-organizer-1.0.5.zip`
 
-### Problem
-Użytkownik nie może zainstalować wtyczki - pokazuje "krytyczny błąd"
-
-### Co potrzebujemy
-1. Szczegóły błędu (kliknij "Szczegóły" w WordPress)
-2. Czy WooCommerce jest zainstalowane?
-3. Zawartość `wp-content/debug.log`
+### Co zostało naprawione
+- ✅ Plik Excel (.xlsx) teraz otwiera się poprawnie w Microsoft Excel
+- ✅ Dodano prawdziwe generowanie XLSX zamiast CSV z rozszerzeniem .xlsx
+- ✅ Użyto biblioteki SimpleXLSXGen (pojedynczy plik PHP, bez Composer)
 
 ---
 
@@ -26,7 +23,7 @@ Użytkownik nie może zainstalować wtyczki - pokazuje "krytyczny błąd"
    - **WooCommerce 5.0+** ← KRYTYCZNE!
 
 2. **Pobierz wtyczkę:**
-   - Użyj: `releases/photojob-organizer-1.0.4.zip`
+   - Użyj: `releases/photojob-organizer-1.0.5.zip`
 
 3. **Zainstaluj:**
    - WordPress Admin → Wtyczki → Dodaj nową → Prześlij wtyczkę
@@ -96,12 +93,12 @@ unzip -l releases/photojob-organizer-X.Y.Z.zip
 
 ---
 
-## Ostatnie Zmiany (v1.0.3)
+## Ostatnie Zmiany (v1.0.5)
 
-✅ Zmieniono mechanizm eksportu na `admin_post_` hook
-✅ Formularz wysyła do `admin-post.php`
-✅ Poprawiono inicjalizację modułów admin
-⚠️ Problem z instalacją - czeka na debug
+✅ Naprawiono format pliku Excel XLSX
+✅ Dodano bibliotekę SimpleXLSXGen
+✅ Plik Excel teraz otwiera się poprawnie
+✅ Prawdziwy format XLSX zamiast CSV z rozszerzeniem .xlsx
 
 ---
 
