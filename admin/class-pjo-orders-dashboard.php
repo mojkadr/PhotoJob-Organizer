@@ -1,0 +1,548 @@
+<?php
+/**
+ * PhotoJob_Orders_Dashboard — lista zamówień z 14 kolumnami z Excela "Zestawienie zamówień"
+ *
+ * Faza B v1.4.0. Funkcje:
+ *  - Lista zamówień WC z dodatkowymi polami z pjo_order_meta (bank, status produkcji, uwagi cached, FV)
+ *  - Filtry: zakres dat, status WC, status produkcji, FV, search
+ *  - Inline edit (Status WC, Bank, Status produkcji) — AJAX
+ *  - Expand row → line items z meta WAPF "Wydruk odbitki" (typ/rozmiar)
+ *  - Pagination 30/strona
+ *  - Badge FV 🧾 + tooltip uwag klienta
+ *  - Auto-detect sezon/placówka z kategorii produktów line items
+ *
+ * @package PhotoJob_Organizer
+ */
+
+if ( ! defined( 'ABSPATH' ) ) {
+    exit;
+}
+
+class PhotoJob_Orders_Dashboard {
+
+    const PAGE_SLUG = 'photojob-orders';
+    const PER_PAGE_DEFAULT = 30;
+
+    private static $instance = null;
+
+    public static function get_instance() {
+        if ( null === self::$instance ) {
+            self::$instance = new self();
+        }
+        return self::$instance;
+    }
+
+    private function __construct() {
+        add_action( 'wp_ajax_pjo_update_order_field', array( $this, 'ajax_update_order_field' ) );
+        add_action( 'wp_ajax_pjo_get_line_items', array( $this, 'ajax_get_line_items' ) );
+    }
+
+    /** ============ AJAX ============ */
+
+    public function ajax_update_order_field() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+
+        $order_id = absint( $_POST['order_id'] ?? 0 );
+        $field    = sanitize_key( $_POST['field'] ?? '' );
+        $value    = wp_unslash( $_POST['value'] ?? '' );
+        if ( ! $order_id || ! $field ) {
+            wp_send_json_error( array( 'message' => 'Bad request' ) );
+        }
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) {
+            wp_send_json_error( array( 'message' => 'Order not found' ) );
+        }
+
+        global $wpdb;
+        $meta_table = $wpdb->prefix . 'pjo_order_meta';
+
+        switch ( $field ) {
+            case 'status':
+                $allowed = array_keys( wc_get_order_statuses() );
+                $new = 'wc-' === substr( $value, 0, 3 ) ? $value : 'wc-' . $value;
+                if ( ! in_array( $new, $allowed, true ) ) {
+                    wp_send_json_error( array( 'message' => 'Invalid status' ) );
+                }
+                $order->update_status( str_replace( 'wc-', '', $new ), __( '[PJO Dashboard]', 'photojob-organizer' ) );
+                wp_send_json_success( array( 'value' => $new, 'label' => wc_get_order_status_name( $new ) ) );
+                break;
+
+            case 'bank':
+                $bank = sanitize_text_field( $value );
+                $existing = $wpdb->get_var( $wpdb->prepare( "SELECT order_id FROM {$meta_table} WHERE order_id=%d", $order_id ) );
+                if ( $existing ) {
+                    $wpdb->update( $meta_table, array( 'bank_account' => $bank ), array( 'order_id' => $order_id ) );
+                } else {
+                    $wpdb->insert( $meta_table, array( 'order_id' => $order_id, 'bank_account' => $bank ) );
+                }
+                wp_send_json_success( array( 'value' => $bank ) );
+                break;
+
+            case 'production_status':
+                $allowed_ps = array( 'pending', 'sent_to_lab', 'received_from_lab', 'incomplete', 'ready_to_pack', 'shipped' );
+                $ps = sanitize_key( $value );
+                if ( ! in_array( $ps, $allowed_ps, true ) ) {
+                    wp_send_json_error( array( 'message' => 'Invalid production status' ) );
+                }
+                $existing = $wpdb->get_var( $wpdb->prepare( "SELECT order_id FROM {$meta_table} WHERE order_id=%d", $order_id ) );
+                if ( $existing ) {
+                    $wpdb->update( $meta_table, array( 'production_status' => $ps ), array( 'order_id' => $order_id ) );
+                } else {
+                    $wpdb->insert( $meta_table, array( 'order_id' => $order_id, 'production_status' => $ps ) );
+                }
+                wp_send_json_success( array( 'value' => $ps, 'label' => self::production_status_label( $ps ) ) );
+                break;
+
+            default:
+                wp_send_json_error( array( 'message' => 'Unknown field' ) );
+        }
+    }
+
+    public function ajax_get_line_items() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error();
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $order_id = absint( $_POST['order_id'] ?? 0 );
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) {
+            wp_send_json_error();
+        }
+        $items = array();
+        foreach ( $order->get_items() as $item_id => $item ) {
+            $product = $item->get_product();
+            $product_name = $item->get_name();
+            $qty = $item->get_quantity();
+            $total = $item->get_total();
+            $thumb = '';
+            $categories_path = '';
+            if ( $product ) {
+                $thumb_id = $product->get_image_id();
+                if ( $thumb_id ) {
+                    $thumb = wp_get_attachment_image_url( $thumb_id, 'thumbnail' );
+                }
+                $cats = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'names' ) );
+                $categories_path = implode( ' › ', $cats );
+            }
+            // Custom meta WAPF — np. "Wydruk odbitki"
+            $extras = array();
+            foreach ( $item->get_meta_data() as $meta ) {
+                $k = $meta->key;
+                if ( substr( $k, 0, 1 ) === '_' ) {
+                    continue;
+                }
+                $v = is_string( $meta->value ) ? $meta->value : maybe_serialize( $meta->value );
+                // Strip cenę w nawiasach: "15x23cm (25 zł)" → "15x23cm"
+                $v_clean = trim( preg_replace( '/\s*\(.*$/u', '', wp_strip_all_tags( $v ) ) );
+                if ( $v_clean !== '' && $v_clean !== '0' ) {
+                    $extras[ $k ] = $v_clean;
+                }
+            }
+            $items[] = array(
+                'item_id'    => $item_id,
+                'name'       => $product_name,
+                'qty'        => $qty,
+                'total'      => wc_price( $total ),
+                'thumb'      => $thumb,
+                'extras'     => $extras,
+                'categories' => $categories_path,
+            );
+        }
+        wp_send_json_success( array( 'items' => $items ) );
+    }
+
+    /** ============ HELPERS ============ */
+
+    public static function production_status_label( $status ) {
+        $map = array(
+            'pending'           => __( '⏳ Oczekuje', 'photojob-organizer' ),
+            'sent_to_lab'       => __( '📤 Wysłane do labu', 'photojob-organizer' ),
+            'received_from_lab' => __( '📥 Przyszły z labu', 'photojob-organizer' ),
+            'incomplete'        => __( '⚠ Niekompletne', 'photojob-organizer' ),
+            'ready_to_pack'     => __( '📦 Do spakowania', 'photojob-organizer' ),
+            'shipped'           => __( '✅ Wysłane do klienta', 'photojob-organizer' ),
+        );
+        return $map[ $status ] ?? $status;
+    }
+
+    public static function production_statuses_all() {
+        return array( 'pending', 'sent_to_lab', 'received_from_lab', 'incomplete', 'ready_to_pack', 'shipped' );
+    }
+
+    /** ============ RENDER ============ */
+
+    public function render_page() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) && ! current_user_can( 'pjo_reception_check' ) ) {
+            wp_die( __( 'Brak uprawnień.', 'photojob-organizer' ) );
+        }
+        $is_worker = PhotoJob_Roles::current_user_is_worker_only();
+
+        // Filtry z $_GET
+        $f = array(
+            'date_from'         => sanitize_text_field( $_GET['date_from'] ?? date( 'Y-m-01' ) ),
+            'date_to'           => sanitize_text_field( $_GET['date_to'] ?? date( 'Y-m-d' ) ),
+            'status'            => sanitize_text_field( $_GET['status'] ?? '' ),
+            'production_status' => sanitize_text_field( $_GET['production_status'] ?? '' ),
+            'wants_invoice'     => sanitize_text_field( $_GET['wants_invoice'] ?? '' ),
+            'search'            => sanitize_text_field( $_GET['search'] ?? '' ),
+            'per_page'          => max( 10, min( 200, absint( $_GET['per_page'] ?? self::PER_PAGE_DEFAULT ) ) ),
+            'paged'             => max( 1, absint( $_GET['paged'] ?? 1 ) ),
+        );
+
+        $query = $this->build_query( $f, $is_worker );
+        $orders = wc_get_orders( $query );
+        $total = $this->count_orders( $f );
+        $total_pages = max( 1, (int) ceil( $total / $f['per_page'] ) );
+
+        $banks = get_option( 'pjo_settings_banks', array() );
+        $wc_statuses = wc_get_order_statuses();
+        $prod_statuses = self::production_statuses_all();
+        ?>
+        <div class="wrap pjo-dashboard">
+            <h1><?php _e( 'Zamówienia', 'photojob-organizer' ); ?>
+                <span class="title-count"><?php echo number_format_i18n( $total ); ?></span>
+            </h1>
+
+            <form method="get" id="pjo-filters">
+                <input type="hidden" name="page" value="<?php echo esc_attr( self::PAGE_SLUG ); ?>">
+                <div style="background:#fff;padding:12px;border:1px solid #c3c4c7;margin:15px 0;display:flex;gap:12px;flex-wrap:wrap;align-items:end;">
+                    <label><strong><?php _e( 'Od:', 'photojob-organizer' ); ?></strong><br>
+                        <input type="date" name="date_from" value="<?php echo esc_attr( $f['date_from'] ); ?>">
+                    </label>
+                    <label><strong><?php _e( 'Do:', 'photojob-organizer' ); ?></strong><br>
+                        <input type="date" name="date_to" value="<?php echo esc_attr( $f['date_to'] ); ?>">
+                    </label>
+                    <label><strong><?php _e( 'Status WC:', 'photojob-organizer' ); ?></strong><br>
+                        <select name="status">
+                            <option value=""><?php _e( '— wszystkie —', 'photojob-organizer' ); ?></option>
+                            <?php foreach ( $wc_statuses as $key => $label ) : ?>
+                                <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $f['status'], $key ); ?>><?php echo esc_html( $label ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                    <label><strong><?php _e( 'Etap produkcji:', 'photojob-organizer' ); ?></strong><br>
+                        <select name="production_status">
+                            <option value=""><?php _e( '— wszystkie —', 'photojob-organizer' ); ?></option>
+                            <?php foreach ( $prod_statuses as $ps ) : ?>
+                                <option value="<?php echo esc_attr( $ps ); ?>" <?php selected( $f['production_status'], $ps ); ?>><?php echo esc_html( self::production_status_label( $ps ) ); ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </label>
+                    <label><strong>FV:</strong><br>
+                        <select name="wants_invoice">
+                            <option value=""><?php _e( '— wszystkie —', 'photojob-organizer' ); ?></option>
+                            <option value="1" <?php selected( $f['wants_invoice'], '1' ); ?>>🧾 <?php _e( 'Tak', 'photojob-organizer' ); ?></option>
+                            <option value="0" <?php selected( $f['wants_invoice'], '0' ); ?>><?php _e( 'Nie', 'photojob-organizer' ); ?></option>
+                        </select>
+                    </label>
+                    <label style="flex:1;min-width:200px;"><strong><?php _e( 'Szukaj:', 'photojob-organizer' ); ?></strong><br>
+                        <input type="search" name="search" value="<?php echo esc_attr( $f['search'] ); ?>" placeholder="<?php esc_attr_e( 'nr zam., klient, email…', 'photojob-organizer' ); ?>" style="width:100%;">
+                    </label>
+                    <label><strong><?php _e( '/strona:', 'photojob-organizer' ); ?></strong><br>
+                        <input type="number" name="per_page" value="<?php echo esc_attr( $f['per_page'] ); ?>" min="10" max="200" style="width:70px;">
+                    </label>
+                    <div>
+                        <button class="button button-primary"><?php _e( 'Filtruj', 'photojob-organizer' ); ?></button>
+                        <a href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>" class="button"><?php _e( 'Reset', 'photojob-organizer' ); ?></a>
+                    </div>
+                </div>
+            </form>
+
+            <?php $this->render_pagination( $f, $total_pages, $total ); ?>
+
+            <table class="wp-list-table widefat striped pjo-orders-table">
+                <thead><tr>
+                    <th style="width:30px;"></th>
+                    <th style="width:90px;"><?php _e( 'Data', 'photojob-organizer' ); ?></th>
+                    <th style="width:80px;"><?php _e( 'Nr', 'photojob-organizer' ); ?></th>
+                    <th><?php _e( 'Klient', 'photojob-organizer' ); ?></th>
+                    <?php if ( ! $is_worker ) : ?>
+                        <th><?php _e( 'Email / Tel', 'photojob-organizer' ); ?></th>
+                        <th style="width:90px;"><?php _e( 'Kwota', 'photojob-organizer' ); ?></th>
+                        <th style="width:140px;"><?php _e( 'Status WC', 'photojob-organizer' ); ?></th>
+                        <th style="width:140px;"><?php _e( 'Bank', 'photojob-organizer' ); ?></th>
+                    <?php endif; ?>
+                    <th style="width:180px;"><?php _e( 'Etap produkcji', 'photojob-organizer' ); ?></th>
+                    <th style="width:120px;"><?php _e( 'Uwagi / FV', 'photojob-organizer' ); ?></th>
+                    <th style="width:80px;"><?php _e( 'Akcje', 'photojob-organizer' ); ?></th>
+                </tr></thead>
+                <tbody>
+                <?php if ( empty( $orders ) ) : ?>
+                    <tr><td colspan="11"><em><?php _e( 'Brak zamówień w wybranym zakresie.', 'photojob-organizer' ); ?></em></td></tr>
+                <?php else :
+                    foreach ( $orders as $order ) :
+                        $this->render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses );
+                    endforeach;
+                endif; ?>
+                </tbody>
+            </table>
+
+            <?php $this->render_pagination( $f, $total_pages, $total ); ?>
+        </div>
+
+        <style>
+        .pjo-dashboard .title-count { background:#2271b1; color:#fff; padding:2px 10px; border-radius:10px; font-size:13px; vertical-align:middle; margin-left:8px; }
+        .pjo-orders-table { font-size:13px; }
+        .pjo-orders-table th { background:#f6f7f7; }
+        .pjo-orders-table tr.status-wc-completed { background:#f0f0f0 !important; }
+        .pjo-orders-table tr.status-wc-processing td { border-left: 3px solid #46b450; }
+        .pjo-orders-table tr.status-wc-on-hold td { border-left: 3px solid #ffba00; }
+        .pjo-orders-table tr.status-wc-pending td { border-left: 3px solid #999; }
+        .pjo-orders-table tr.status-wc-cancelled { background:#fde2e2 !important; opacity:0.7; }
+        .pjo-orders-table tr.status-wc-refunded { background:#fde2e2 !important; opacity:0.7; }
+        .pjo-orders-table .pjo-expand-btn { cursor:pointer; background:none; border:1px solid #c3c4c7; border-radius:4px; padding:2px 8px; font-weight:bold; }
+        .pjo-orders-table .pjo-inline-edit { background:transparent; border:1px solid transparent; padding:4px; cursor:pointer; }
+        .pjo-orders-table .pjo-inline-edit:hover { border-color:#c3c4c7; background:#fff; }
+        .pjo-orders-table .pjo-fv-badge { background:#46b450; color:#fff; padding:2px 6px; border-radius:3px; font-size:11px; }
+        .pjo-orders-table .pjo-note-badge { background:#ffba00; color:#fff; padding:2px 6px; border-radius:3px; font-size:11px; cursor:help; }
+        .pjo-line-items-row td { background:#fafafa !important; padding:0 !important; }
+        .pjo-line-items-content { padding:12px 24px; }
+        .pjo-line-item { display:flex; gap:12px; padding:8px 0; border-bottom:1px dashed #e0e0e0; align-items:center; }
+        .pjo-line-item:last-child { border-bottom:0; }
+        .pjo-line-item img { border:1px solid #ddd; border-radius:3px; }
+        .pjo-line-item .extras { color:#555; font-size:12px; }
+        .pjo-line-item .cats { color:#888; font-size:11px; font-style:italic; }
+        </style>
+
+        <script>
+        (function() {
+            var nonce = '<?php echo esc_js( wp_create_nonce( 'pjo_dashboard' ) ); ?>';
+            var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+
+            // Expand line items
+            document.querySelectorAll('.pjo-expand-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var orderId = btn.getAttribute('data-order');
+                    var row = document.getElementById('pjo-items-' + orderId);
+                    if (row.style.display === 'table-row') {
+                        row.style.display = 'none';
+                        btn.textContent = '+';
+                        return;
+                    }
+                    btn.textContent = '−';
+                    row.style.display = 'table-row';
+                    var content = row.querySelector('.pjo-line-items-content');
+                    if (content.getAttribute('data-loaded') === '1') return;
+                    content.innerHTML = '⏳ Ładuję…';
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_get_line_items');
+                    fd.append('nonce', nonce);
+                    fd.append('order_id', orderId);
+                    fetch(ajaxUrl, { method: 'POST', credentials: 'same-origin', body: fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j) {
+                            if (!j.success) { content.innerHTML = '❌ Błąd'; return; }
+                            var html = '';
+                            j.data.items.forEach(function(it) {
+                                html += '<div class="pjo-line-item">';
+                                if (it.thumb) html += '<img src="' + it.thumb + '" width="60" height="60" style="object-fit:cover;">';
+                                html += '<div style="flex:1;">';
+                                html += '<strong>' + (it.name||'').replace(/</g,'&lt;') + '</strong>';
+                                if (it.cats) html += ' <span class="cats">' + it.cats.replace(/</g,'&lt;') + '</span>';
+                                var extras = [];
+                                Object.keys(it.extras||{}).forEach(function(k) { extras.push('<strong>'+k.replace(/</g,'&lt;')+':</strong> '+(it.extras[k]||'').replace(/</g,'&lt;')); });
+                                if (extras.length) html += '<div class="extras">' + extras.join(' • ') + '</div>';
+                                html += '</div>';
+                                html += '<div style="text-align:right;"><div>' + it.qty + ' szt.</div><div>' + it.total + '</div></div>';
+                                html += '</div>';
+                            });
+                            if (!j.data.items.length) html = '<em>Brak line items.</em>';
+                            content.innerHTML = html;
+                            content.setAttribute('data-loaded', '1');
+                        });
+                });
+            });
+
+            // Inline edit (status, bank, production_status)
+            document.querySelectorAll('.pjo-inline-edit').forEach(function(sel) {
+                sel.addEventListener('change', function() {
+                    var orderId = sel.getAttribute('data-order');
+                    var field = sel.getAttribute('data-field');
+                    var value = sel.value;
+                    var origValue = sel.getAttribute('data-original') || '';
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_update_order_field');
+                    fd.append('nonce', nonce);
+                    fd.append('order_id', orderId);
+                    fd.append('field', field);
+                    fd.append('value', value);
+                    sel.disabled = true;
+                    fetch(ajaxUrl, { method: 'POST', credentials: 'same-origin', body: fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j) {
+                            sel.disabled = false;
+                            if (!j.success) {
+                                alert('Błąd: ' + (j.data && j.data.message ? j.data.message : 'unknown'));
+                                sel.value = origValue;
+                                return;
+                            }
+                            sel.setAttribute('data-original', value);
+                            sel.style.background = '#dff0d8';
+                            setTimeout(function() { sel.style.background = ''; }, 1200);
+                            // Update row style after status change
+                            if (field === 'status') {
+                                var tr = sel.closest('tr');
+                                tr.className = tr.className.replace(/status-wc-\S+/g, '').trim();
+                                tr.classList.add('status-' + value);
+                            }
+                        })
+                        .catch(function(e) { sel.disabled = false; alert(e.message); });
+                });
+            });
+        })();
+        </script>
+        <?php
+    }
+
+    private function render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses ) {
+        global $wpdb;
+        $meta_table = $wpdb->prefix . 'pjo_order_meta';
+        $oid = $order->get_id();
+        $meta = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$meta_table} WHERE order_id=%d", $oid ), ARRAY_A );
+
+        $status = 'wc-' . $order->get_status();
+        $status_label = wc_get_order_status_name( $status );
+        $bank = $meta['bank_account'] ?? '';
+        $prod_status = $meta['production_status'] ?? 'pending';
+        $customer_note = $meta['customer_note_cached'] ?? $order->get_customer_note();
+        $wants_invoice = (int) ( $meta['wants_invoice'] ?? 0 );
+
+        $client = trim( $order->get_billing_first_name() . ' ' . $order->get_billing_last_name() );
+        if ( ! $client ) {
+            $client = $order->get_billing_company();
+        }
+        $email = $order->get_billing_email();
+        $phone = $order->get_billing_phone();
+        $total_fmt = $order->get_formatted_order_total();
+        $date = $order->get_date_created() ? $order->get_date_created()->date_i18n( 'Y-m-d' ) : '—';
+        ?>
+        <tr class="status-<?php echo esc_attr( $status ); ?>">
+            <td><button class="pjo-expand-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Pokaż produkty zamówienia', 'photojob-organizer' ); ?>">+</button></td>
+            <td><?php echo esc_html( $date ); ?></td>
+            <td><a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank">#<?php echo esc_html( $oid ); ?></a></td>
+            <td><?php echo esc_html( $client ); ?></td>
+            <?php if ( ! $is_worker ) : ?>
+                <td>
+                    <a href="mailto:<?php echo esc_attr( $email ); ?>"><?php echo esc_html( $email ); ?></a>
+                    <?php if ( $phone ) : ?><br><a href="tel:<?php echo esc_attr( $phone ); ?>" style="color:#555;"><?php echo esc_html( $phone ); ?></a><?php endif; ?>
+                </td>
+                <td><strong><?php echo wp_kses_post( $total_fmt ); ?></strong></td>
+                <td>
+                    <select class="pjo-inline-edit" data-order="<?php echo esc_attr( $oid ); ?>" data-field="status" data-original="<?php echo esc_attr( $status ); ?>">
+                        <?php foreach ( $wc_statuses as $key => $label ) : ?>
+                            <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $status, $key ); ?>><?php echo esc_html( $label ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </td>
+                <td>
+                    <select class="pjo-inline-edit" data-order="<?php echo esc_attr( $oid ); ?>" data-field="bank" data-original="<?php echo esc_attr( $bank ); ?>">
+                        <option value=""><?php _e( '— wybierz —', 'photojob-organizer' ); ?></option>
+                        <?php foreach ( $banks as $b ) : ?>
+                            <option value="<?php echo esc_attr( $b ); ?>" <?php selected( $bank, $b ); ?>><?php echo esc_html( $b ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </td>
+            <?php endif; ?>
+            <td>
+                <select class="pjo-inline-edit" data-order="<?php echo esc_attr( $oid ); ?>" data-field="production_status" data-original="<?php echo esc_attr( $prod_status ); ?>">
+                    <?php foreach ( $prod_statuses as $ps ) : ?>
+                        <option value="<?php echo esc_attr( $ps ); ?>" <?php selected( $prod_status, $ps ); ?>><?php echo esc_html( self::production_status_label( $ps ) ); ?></option>
+                    <?php endforeach; ?>
+                </select>
+            </td>
+            <td>
+                <?php if ( $wants_invoice ) : ?>
+                    <span class="pjo-fv-badge" title="<?php echo esc_attr( $customer_note ); ?>">🧾 FV</span>
+                <?php endif; ?>
+                <?php if ( $customer_note && ! $wants_invoice ) : ?>
+                    <span class="pjo-note-badge" title="<?php echo esc_attr( $customer_note ); ?>">📝 <?php _e( 'uwagi', 'photojob-organizer' ); ?></span>
+                <?php elseif ( $customer_note && $wants_invoice ) : ?>
+                    <span class="pjo-note-badge" title="<?php echo esc_attr( $customer_note ); ?>">📝</span>
+                <?php endif; ?>
+            </td>
+            <td>
+                <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank" class="button button-small">↗</a>
+            </td>
+        </tr>
+        <tr id="pjo-items-<?php echo esc_attr( $oid ); ?>" class="pjo-line-items-row" style="display:none;">
+            <td colspan="<?php echo $is_worker ? 6 : 11; ?>">
+                <div class="pjo-line-items-content" data-loaded="0"></div>
+            </td>
+        </tr>
+        <?php
+    }
+
+    private function render_pagination( $f, $total_pages, $total ) {
+        if ( $total_pages <= 1 ) {
+            return;
+        }
+        $current = $f['paged'];
+        $base_url = remove_query_arg( 'paged' );
+        ?>
+        <div class="tablenav" style="margin:10px 0;">
+            <div class="tablenav-pages">
+                <span class="displaying-num"><?php printf( __( '%d zamówień', 'photojob-organizer' ), $total ); ?></span>
+                <span class="pagination-links">
+                    <?php
+                    $pages_to_show = array( 1, $current - 1, $current, $current + 1, $total_pages );
+                    $pages_to_show = array_unique( array_filter( $pages_to_show, function( $p ) use ( $total_pages ) { return $p >= 1 && $p <= $total_pages; } ) );
+                    sort( $pages_to_show );
+                    $last_p = 0;
+                    foreach ( $pages_to_show as $p ) {
+                        if ( $last_p && $p - $last_p > 1 ) {
+                            echo ' … ';
+                        }
+                        if ( $p === $current ) {
+                            echo '<span class="current" style="padding:4px 8px;background:#2271b1;color:#fff;border-radius:3px;">' . $p . '</span> ';
+                        } else {
+                            $url = add_query_arg( 'paged', $p, $base_url );
+                            echo '<a class="button" href="' . esc_url( $url ) . '">' . $p . '</a> ';
+                        }
+                        $last_p = $p;
+                    }
+                    ?>
+                </span>
+            </div>
+        </div>
+        <?php
+    }
+
+    private function build_query( $f, $is_worker ) {
+        $args = array(
+            'limit'    => $f['per_page'],
+            'paged'    => $f['paged'],
+            'orderby'  => 'date',
+            'order'    => 'DESC',
+            'return'   => 'objects',
+        );
+        if ( $f['date_from'] ) {
+            $args['date_created'] = '>=' . $f['date_from'];
+        }
+        if ( $f['date_to'] ) {
+            if ( isset( $args['date_created'] ) ) {
+                $args['date_created'] .= '...' . $f['date_to'] . ' 23:59:59';
+            } else {
+                $args['date_created'] = '<=' . $f['date_to'] . ' 23:59:59';
+            }
+        }
+        if ( $f['status'] ) {
+            $args['status'] = str_replace( 'wc-', '', $f['status'] );
+        }
+        if ( $f['search'] ) {
+            $args['s'] = $f['search'];
+        }
+        return $args;
+    }
+
+    private function count_orders( $f ) {
+        $count_args = $this->build_query( $f, false );
+        $count_args['limit'] = -1;
+        $count_args['return'] = 'ids';
+        $count_args['paged'] = 1;
+        $ids = wc_get_orders( $count_args );
+        return is_array( $ids ) ? count( $ids ) : 0;
+    }
+}

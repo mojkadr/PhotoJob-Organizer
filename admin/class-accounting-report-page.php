@@ -48,8 +48,9 @@ class PhotoJob_Accounting_Report_Page {
             wp_die( __( 'Błąd weryfikacji bezpieczeństwa.', 'photojob-organizer' ) );
         }
 
-        // Sprawdź uprawnienia
-        if ( ! current_user_can( 'manage_woocommerce' ) ) {
+        // Sprawdź uprawnienia (pjo_export_accounting nadane administratorowi + shop_manager przez aktywator;
+        // fallback na manage_woocommerce dla wstecznej kompatybilności z instalacjami < v1.1.0)
+        if ( ! current_user_can( 'pjo_export_accounting' ) && ! current_user_can( 'manage_woocommerce' ) ) {
             wp_die( __( 'Nie masz uprawnień do wykonania tej akcji.', 'photojob-organizer' ) );
         }
 
@@ -106,29 +107,40 @@ class PhotoJob_Accounting_Report_Page {
     }
 
     /**
-     * Pobierz informacje o firmie z ustawień WooCommerce
+     * Pobierz informacje o firmie — priority: PJO Settings (v1.1+), fallback na WC store settings.
      *
      * @return array Informacje o firmie
      */
     private function get_company_info() {
-        $store_name = get_bloginfo( 'name' );
-        $store_address = WC()->countries->get_base_address();
-        $store_city = WC()->countries->get_base_city();
-        $store_postcode = WC()->countries->get_base_postcode();
+        $pjo = get_option( 'pjo_settings_company', array() );
+        $name    = isset( $pjo['name'] )    && $pjo['name']    !== '' ? $pjo['name']    : '';
+        $nip     = isset( $pjo['nip'] )     && $pjo['nip']     !== '' ? $pjo['nip']     : '';
+        $regon   = isset( $pjo['regon'] )   && $pjo['regon']   !== '' ? $pjo['regon']   : '';
+        $address = isset( $pjo['address'] ) && $pjo['address'] !== '' ? $pjo['address'] : '';
 
-        // Pobierz NIP z ustawień (jeśli jest)
-        $nip = get_option( 'woocommerce_store_vat_number', '' );
-
-        // Zbuduj adres
-        $address_parts = array_filter( array(
-            $store_address,
-            $store_postcode . ' ' . $store_city,
-        ) );
+        // Fallback na WC store settings dla pól które nie są ustawione w PJO Settings.
+        if ( $name === '' ) {
+            $name = get_bloginfo( 'name' );
+        }
+        if ( $address === '' && function_exists( 'WC' ) ) {
+            $store_address  = WC()->countries->get_base_address();
+            $store_city     = WC()->countries->get_base_city();
+            $store_postcode = WC()->countries->get_base_postcode();
+            $address_parts = array_filter( array(
+                $store_address,
+                trim( $store_postcode . ' ' . $store_city ),
+            ) );
+            $address = implode( "\n", $address_parts );
+        }
+        if ( $nip === '' ) {
+            $nip = get_option( 'woocommerce_store_vat_number', '' );
+        }
 
         return array(
-            'name'    => $store_name,
-            'address' => implode( "\n", $address_parts ),
+            'name'    => $name,
+            'address' => $address,
             'nip'     => $nip,
+            'regon'   => $regon,
         );
     }
 

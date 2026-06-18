@@ -98,16 +98,19 @@ class PhotoJob_Excel_Exporter {
         // Przygotuj dane do eksportu
         $data = array();
 
-        // Dodaj informacje o firmie
+        // Dodaj informacje o firmie (pomijamy puste pola — fix v1.3.1)
         if ( ! empty( $company_info ) ) {
-            if ( isset( $company_info['name'] ) ) {
+            if ( ! empty( $company_info['name'] ) ) {
                 $data[] = array( '', '<b>' . $company_info['name'] . '</b>' );
             }
-            if ( isset( $company_info['address'] ) ) {
+            if ( ! empty( $company_info['address'] ) ) {
                 $data[] = array( '', $company_info['address'] );
             }
-            if ( isset( $company_info['nip'] ) ) {
+            if ( ! empty( $company_info['nip'] ) ) {
                 $data[] = array( '', 'NIP: ' . $company_info['nip'] );
+            }
+            if ( ! empty( $company_info['regon'] ) ) {
+                $data[] = array( '', 'REGON: ' . $company_info['regon'] );
             }
 
             // Dodaj miesiąc
@@ -217,14 +220,17 @@ class PhotoJob_Excel_Exporter {
 
         // Dodaj informacje o firmie
         if ( ! empty( $company_info ) ) {
-            if ( isset( $company_info['name'] ) ) {
+            if ( ! empty( $company_info['name'] ) ) {
                 fputcsv( $output, array( '', $company_info['name'] ), ';' );
             }
-            if ( isset( $company_info['address'] ) ) {
+            if ( ! empty( $company_info['address'] ) ) {
                 fputcsv( $output, array( '', $company_info['address'] ), ';' );
             }
-            if ( isset( $company_info['nip'] ) ) {
+            if ( ! empty( $company_info['nip'] ) ) {
                 fputcsv( $output, array( '', 'NIP: ' . $company_info['nip'] ), ';' );
+            }
+            if ( ! empty( $company_info['regon'] ) ) {
+                fputcsv( $output, array( '', 'REGON: ' . $company_info['regon'] ), ';' );
             }
 
             // Dodaj miesiąc

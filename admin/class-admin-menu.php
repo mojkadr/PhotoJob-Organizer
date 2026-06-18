@@ -42,28 +42,51 @@ class PhotoJob_Admin_Menu {
      * Dodaj strony menu
      */
     public function add_menu_pages() {
-        // Główne menu wtyczki
+        // Capability dla głównego menu — najniższy wspólny mianownik, żeby pracownik też widział menu PhotoJob.
+        // Konkretne submenu są chronione własnymi capabilities.
+        $menu_cap = current_user_can( 'pjo_manage_orders' ) ? 'pjo_manage_orders' : 'pjo_reception_check';
+
         add_menu_page(
             __( 'PhotoJob Organizer', 'photojob-organizer' ),
             __( 'PhotoJob', 'photojob-organizer' ),
-            'manage_woocommerce',
+            $menu_cap,
             'photojob-organizer',
             array( $this, 'render_main_page' ),
             'dashicons-camera',
             56
         );
 
-        // Podstrona: Raport księgowy
+        // Zamówienia — Dashboard (Faza B)
+        add_submenu_page(
+            'photojob-organizer',
+            __( 'Zamówienia', 'photojob-organizer' ),
+            __( 'Zamówienia', 'photojob-organizer' ),
+            current_user_can( 'pjo_manage_orders' ) ? 'pjo_manage_orders' : 'pjo_reception_check',
+            PhotoJob_Orders_Dashboard::PAGE_SLUG,
+            array( PhotoJob_Orders_Dashboard::get_instance(), 'render_page' )
+        );
+
+        // Raport księgowy — tylko admin
         add_submenu_page(
             'photojob-organizer',
             __( 'Raport księgowy', 'photojob-organizer' ),
             __( 'Raport księgowy', 'photojob-organizer' ),
-            'manage_woocommerce',
+            'pjo_export_accounting',
             'photojob-accounting-report',
             array( $this, 'render_accounting_report_page' )
         );
 
-        // Zamień nazwę pierwszego submenu
+        // Ustawienia — tylko admin
+        add_submenu_page(
+            'photojob-organizer',
+            __( 'Ustawienia', 'photojob-organizer' ),
+            __( 'Ustawienia', 'photojob-organizer' ),
+            'pjo_manage_settings',
+            PhotoJob_Settings::PAGE_SLUG,
+            array( PhotoJob_Settings::get_instance(), 'render_page' )
+        );
+
+        // Zamień nazwę pierwszego submenu na "Przegląd"
         global $submenu;
         if ( isset( $submenu['photojob-organizer'] ) ) {
             $submenu['photojob-organizer'][0][0] = __( 'Przegląd', 'photojob-organizer' );
@@ -74,42 +97,104 @@ class PhotoJob_Admin_Menu {
      * Renderuj główną stronę
      */
     public function render_main_page() {
+        $is_worker = PhotoJob_Roles::current_user_is_worker_only();
         ?>
         <div class="wrap">
             <h1><?php echo esc_html( get_admin_page_title() ); ?></h1>
 
-            <div class="card">
-                <h2><?php _e( 'Witaj w PhotoJob Organizer', 'photojob-organizer' ); ?></h2>
-                <p><?php _e( 'Narzędzie do organizacji zamówień fotograficznych i generowania raportów księgowych.', 'photojob-organizer' ); ?></p>
+            <?php if ( $is_worker ) : ?>
+                <div class="card">
+                    <h2><?php _e( 'Twoje moduły', 'photojob-organizer' ); ?></h2>
+                    <ul>
+                        <li>
+                            <strong><?php _e( 'Przyjęcie odbitek', 'photojob-organizer' ); ?></strong> —
+                            <?php _e( 'Sprawdzanie zawartości paczek z laboratorium.', 'photojob-organizer' ); ?>
+                            <em><?php _e( '(dostępne od v1.2 — Faza D)', 'photojob-organizer' ); ?></em>
+                        </li>
+                        <li>
+                            <strong><?php _e( 'Etykiety na koperty', 'photojob-organizer' ); ?></strong> —
+                            <?php _e( 'Generowanie PDF arkuszy A4 z etykietami.', 'photojob-organizer' ); ?>
+                            <em><?php _e( '(dostępne od v1.2 — Faza D)', 'photojob-organizer' ); ?></em>
+                        </li>
+                    </ul>
+                </div>
+            <?php else : ?>
+                <div class="card">
+                    <h2><?php _e( 'Witaj w PhotoJob Organizer', 'photojob-organizer' ); ?></h2>
+                    <p><?php _e( 'Narzędzie do organizacji zamówień fotograficznych, kompletacji zdjęć i raportów księgowych.', 'photojob-organizer' ); ?></p>
 
-                <h3><?php _e( 'Dostępne funkcje:', 'photojob-organizer' ); ?></h3>
-                <ul>
-                    <li>
-                        <strong><?php _e( 'Raport księgowy', 'photojob-organizer' ); ?></strong> -
-                        <?php _e( 'Generuj zestawienia transakcji dla księgowej z wybranego zakresu dat.', 'photojob-organizer' ); ?>
-                        <a href="<?php echo esc_url( admin_url( 'admin.php?page=photojob-accounting-report' ) ); ?>" class="button button-primary">
-                            <?php _e( 'Przejdź do raportu', 'photojob-organizer' ); ?>
-                        </a>
-                    </li>
-                </ul>
-            </div>
+                    <h3><?php _e( 'Dostępne moduły:', 'photojob-organizer' ); ?></h3>
+                    <ul>
+                        <?php if ( current_user_can( 'pjo_export_accounting' ) ) : ?>
+                        <li>
+                            <strong><?php _e( 'Raport księgowy', 'photojob-organizer' ); ?></strong> —
+                            <?php _e( 'Generuj zestawienia transakcji dla księgowej z wybranego zakresu dat.', 'photojob-organizer' ); ?>
+                            <a href="<?php echo esc_url( admin_url( 'admin.php?page=photojob-accounting-report' ) ); ?>" class="button">
+                                <?php _e( 'Otwórz', 'photojob-organizer' ); ?>
+                            </a>
+                        </li>
+                        <?php endif; ?>
+                        <?php if ( current_user_can( 'pjo_manage_settings' ) ) : ?>
+                        <li>
+                            <strong><?php _e( 'Ustawienia', 'photojob-organizer' ); ?></strong> —
+                            <?php _e( 'Firma, NIP, banki, sezony, mapowanie produktów, QNAP, etykiety, sklepy zewnętrzne.', 'photojob-organizer' ); ?>
+                            <a href="<?php echo esc_url( admin_url( 'admin.php?page=' . PhotoJob_Settings::PAGE_SLUG ) ); ?>" class="button">
+                                <?php _e( 'Otwórz', 'photojob-organizer' ); ?>
+                            </a>
+                        </li>
+                        <?php endif; ?>
+                    </ul>
 
-            <div class="card">
-                <h3><?php _e( 'Wymagania', 'photojob-organizer' ); ?></h3>
-                <ul>
-                    <li>
-                        <?php
-                        if ( class_exists( 'WooCommerce' ) ) {
-                            echo '<span class="dashicons dashicons-yes-alt" style="color: green;"></span> ';
-                            _e( 'WooCommerce jest aktywne', 'photojob-organizer' );
-                        } else {
-                            echo '<span class="dashicons dashicons-dismiss" style="color: red;"></span> ';
-                            _e( 'WooCommerce nie jest aktywne', 'photojob-organizer' );
-                        }
-                        ?>
-                    </li>
-                </ul>
-            </div>
+                    <h3><?php _e( 'W roadmapie (po Fazie A):', 'photojob-organizer' ); ?></h3>
+                    <ul>
+                        <li><strong><?php _e( 'Faza B', 'photojob-organizer' ); ?></strong> — <?php _e( 'Dashboard zamówień (14 kolumn z Excela, filtry sezon/rok/status, inline edit)', 'photojob-organizer' ); ?></li>
+                        <li><strong><?php _e( 'Faza C', 'photojob-organizer' ); ?></strong> — <?php _e( 'Folder Builder QNAP (auto-kopiowanie z magazynu sesji, eliminacja ręcznego dopisywania prefiksów)', 'photojob-organizer' ); ?></li>
+                        <li><strong><?php _e( 'Faza D', 'photojob-organizer' ); ?></strong> — <?php _e( 'Reception Module + Etykiety na koperty', 'photojob-organizer' ); ?></li>
+                        <li><strong><?php _e( 'Faza F', 'photojob-organizer' ); ?></strong> — <?php _e( 'Print Export (ZIP+CSV dla nphoto, browser bot opcjonalnie)', 'photojob-organizer' ); ?></li>
+                    </ul>
+                </div>
+
+                <div class="card">
+                    <h3><?php _e( 'Status systemu', 'photojob-organizer' ); ?></h3>
+                    <ul>
+                        <li>
+                            <?php
+                            if ( class_exists( 'WooCommerce' ) ) {
+                                echo '<span class="dashicons dashicons-yes-alt" style="color: green;"></span> ';
+                                _e( 'WooCommerce jest aktywne', 'photojob-organizer' );
+                            } else {
+                                echo '<span class="dashicons dashicons-dismiss" style="color: red;"></span> ';
+                                _e( 'WooCommerce nie jest aktywne', 'photojob-organizer' );
+                            }
+                            ?>
+                        </li>
+                        <li>
+                            <?php
+                            $db_version = get_option( PhotoJob_Activator::DB_VERSION_OPTION, '0' );
+                            if ( version_compare( $db_version, PhotoJob_Activator::DB_VERSION, '>=' ) ) {
+                                echo '<span class="dashicons dashicons-yes-alt" style="color: green;"></span> ';
+                                printf( esc_html__( 'Schema bazy danych: v%s', 'photojob-organizer' ), esc_html( $db_version ) );
+                            } else {
+                                echo '<span class="dashicons dashicons-warning" style="color: orange;"></span> ';
+                                printf( esc_html__( 'Schema bazy danych: v%s (wymagana v%s)', 'photojob-organizer' ), esc_html( $db_version ), esc_html( PhotoJob_Activator::DB_VERSION ) );
+                            }
+                            ?>
+                        </li>
+                        <li>
+                            <?php
+                            $worker_exists = get_role( PhotoJob_Roles::WORKER_ROLE ) !== null;
+                            if ( $worker_exists ) {
+                                echo '<span class="dashicons dashicons-yes-alt" style="color: green;"></span> ';
+                                _e( 'Rola "Pracownik Foto" zarejestrowana', 'photojob-organizer' );
+                            } else {
+                                echo '<span class="dashicons dashicons-dismiss" style="color: red;"></span> ';
+                                _e( 'Rola "Pracownik Foto" NIE jest zarejestrowana (re-aktywuj wtyczkę)', 'photojob-organizer' );
+                            }
+                            ?>
+                        </li>
+                    </ul>
+                </div>
+            <?php endif; ?>
         </div>
         <?php
     }

@@ -1,6 +1,24 @@
 # PhotoJob Organizer
 
-Wtyczka WordPress do organizacji zamówień fotograficznych i generowania raportów księgowych.
+**Wersja:** 1.1.0 (Faza A: Fundament rozszerzenia) — czerwiec 2026
+
+Wtyczka WordPress do organizacji zamówień fotograficznych, kompletacji zdjęć w struktury per zamówienie i generowania raportów księgowych. Zaprojektowana dla studia fotograficznego sprzedającego odbitki przez WooCommerce.
+
+## Roadmapa modułów
+
+| Faza | Status | Zawartość |
+|------|--------|-----------|
+| **A** | ✅ v1.1.0 | Fundament: tabele DB, role (admin/pracownik), Settings page (7 zakładek) |
+| **B** | ⏳ | Dashboard zamówień (14 kolumn, filtry sezon/rok/status, inline edit) |
+| **C** | ⏳ | Folder Builder QNAP (auto-kopiowanie z magazynu sesji wg konwencji `{Sezon}/{NrZam}/{Typ}/{Rozmiar}/`) |
+| **D** | ⏳ | Reception Module + Etykiety na koperty (PDF arkusze Avery A4) |
+| **E** | ✅ v1.0+ | Eksport XLSX księgowy |
+| **F** | ⏳ | Print Export (ZIP+CSV dla nphoto; opcjonalnie browser bot) |
+
+## Role
+
+- **Administrator / Shop Manager** — pełen dostęp (finanse, raporty, ustawienia, zarządzanie zamówieniami)
+- **Pracownik Foto** (`pjo_worker`) — TYLKO przyjęcie odbitek (sprawdzanie zawartości paczek) i drukowanie etykiet. **Bez dostępu do kwot, maili i adresów klientów** (poza modułem etykiet, gdzie adres jest potrzebny).
 
 ## Opis
 
