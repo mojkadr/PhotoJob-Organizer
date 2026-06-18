@@ -35,6 +35,71 @@ class PhotoJob_Orders_Dashboard {
     private function __construct() {
         add_action( 'wp_ajax_pjo_update_order_field', array( $this, 'ajax_update_order_field' ) );
         add_action( 'wp_ajax_pjo_get_line_items', array( $this, 'ajax_get_line_items' ) );
+        add_action( 'wp_ajax_pjo_build_preview', array( $this, 'ajax_build_preview' ) );
+        add_action( 'wp_ajax_pjo_build_execute', array( $this, 'ajax_build_execute' ) );
+    }
+
+    /** ============ FOLDER BUILDER (Faza C) ============ */
+
+    /**
+     * Dry-run: zbuduj plan druku i sprawdź dopasowanie plików źródłowych na QNAP.
+     */
+    public function ajax_build_preview() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $order_id = absint( $_POST['order_id'] ?? 0 );
+        if ( ! $order_id ) {
+            wp_send_json_error( array( 'message' => 'Bad request' ) );
+        }
+        @set_time_limit( 0 );
+
+        $qnap = new PhotoJob_QNAP_Client();
+        if ( ! $qnap->is_configured() ) {
+            wp_send_json_error( array( 'message' => __( 'QNAP nie jest skonfigurowany — uzupełnij host/użytkownika/hasło w Ustawienia → QNAP.', 'photojob-organizer' ) ) );
+        }
+        if ( ! $qnap->login() ) {
+            wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP nieudane: ', 'photojob-organizer' ) . $qnap->last_error ) );
+        }
+
+        $plan = PhotoJob_Folder_Builder::build_plan( $order_id, $qnap );
+        $qnap->logout();
+        if ( is_wp_error( $plan ) ) {
+            wp_send_json_error( array( 'message' => $plan->get_error_message() ) );
+        }
+        wp_send_json_success( $plan );
+    }
+
+    /**
+     * Wykonaj plan: utwórz foldery + skopiuj + przemianuj pliki na QNAP.
+     */
+    public function ajax_build_execute() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $order_id = absint( $_POST['order_id'] ?? 0 );
+        if ( ! $order_id ) {
+            wp_send_json_error( array( 'message' => 'Bad request' ) );
+        }
+        @set_time_limit( 0 );
+        ignore_user_abort( true );
+
+        $qnap = new PhotoJob_QNAP_Client();
+        if ( ! $qnap->is_configured() ) {
+            wp_send_json_error( array( 'message' => __( 'QNAP nie jest skonfigurowany.', 'photojob-organizer' ) ) );
+        }
+        if ( ! $qnap->login() ) {
+            wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP nieudane: ', 'photojob-organizer' ) . $qnap->last_error ) );
+        }
+
+        $result = PhotoJob_Folder_Builder::execute_plan( $order_id, $qnap );
+        $qnap->logout();
+        if ( isset( $result['error'] ) ) {
+            wp_send_json_error( array( 'message' => $result['error'] ) );
+        }
+        wp_send_json_success( $result );
     }
 
     /** ============ AJAX ============ */
@@ -305,6 +370,24 @@ class PhotoJob_Orders_Dashboard {
         .pjo-line-item img { border:1px solid #ddd; border-radius:3px; }
         .pjo-line-item .extras { color:#555; font-size:12px; }
         .pjo-line-item .cats { color:#888; font-size:11px; font-style:italic; }
+        .pjo-built-flag { cursor:help; }
+        .pjo-build-row td { background:#f3f8ff !important; padding:0 !important; }
+        .pjo-build-content { padding:12px 20px; }
+        .pjo-build-content h4 { margin:0 0 8px; }
+        .pjo-build-meta { font-size:12px; color:#555; margin-bottom:10px; }
+        .pjo-build-meta code { background:#fff; border:1px solid #d6e4f5; padding:1px 5px; border-radius:3px; }
+        table.pjo-build-table { width:100%; border-collapse:collapse; font-size:12px; background:#fff; }
+        table.pjo-build-table th, table.pjo-build-table td { border:1px solid #e0e6ed; padding:5px 8px; text-align:left; vertical-align:top; }
+        table.pjo-build-table th { background:#eef4fb; }
+        table.pjo-build-table tr.row-missing td { background:#fff5f5; }
+        table.pjo-build-table tr.row-skip td { background:#f6f6f6; color:#888; }
+        .pjo-build-target { font-family:Consolas,Monaco,monospace; font-size:11px; color:#1a4d80; }
+        .pjo-build-actions { margin-top:12px; display:flex; gap:10px; align-items:center; }
+        .pjo-warn { background:#fff8e5; border:1px solid #f0d48a; padding:6px 10px; border-radius:4px; font-size:12px; margin-bottom:8px; }
+        .pjo-st-ok { color:#1a7f37; font-weight:bold; }
+        .pjo-st-missing { color:#c92a2a; font-weight:bold; }
+        .pjo-st-skip { color:#888; }
+        .pjo-st-error { color:#c92a2a; font-weight:bold; }
         </style>
 
         <script>
@@ -392,6 +475,95 @@ class PhotoJob_Orders_Dashboard {
                         .catch(function(e) { sel.disabled = false; alert(e.message); });
                 });
             });
+
+            // ===== Folder Builder (Faza C) =====
+            function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+            function renderPlan(box, plan) {
+                var orderId = box.getAttribute('data-order');
+                var html = '<h4>🗂 Plan druku — zamówienie #' + esc(plan.order_no) + '</h4>';
+                html += '<div class="pjo-build-meta">Sezon: <code>' + esc(plan.season || '—') + '</code> · Cel: <code>' + esc(plan.build_root) + '</code> · Źródło: <code>' + esc(plan.source_root) + '</code>';
+                if (plan.indexed != null) html += ' · Zindeksowano plików: <strong>' + plan.indexed + '</strong>';
+                html += '</div>';
+                (plan.warnings || []).forEach(function(w){ html += '<div class="pjo-warn">⚠ ' + esc(w) + '</div>'; });
+
+                var okCount = 0, missCount = 0, skipCount = 0;
+                html += '<table class="pjo-build-table"><thead><tr><th>Plik (produkt)</th><th>Typ</th><th>Rozmiar</th><th>Il.</th><th>Status źródła</th><th>Nazwa docelowa</th></tr></thead><tbody>';
+                (plan.items || []).forEach(function(it) {
+                    var cls = '', st = '';
+                    if (it.skip) { cls = 'row-skip'; st = '<span class="pjo-st-skip">— ' + esc(it.reason) + '</span>'; skipCount++; }
+                    else if (it.source_found === true) { st = '<span class="pjo-st-ok">✓ ' + esc(it.source_dir) + '</span>'; okCount++; }
+                    else if (it.source_found === false) { cls = 'row-missing'; st = '<span class="pjo-st-missing">✗ ' + esc(it.reason || 'brak') + '</span>'; missCount++; }
+                    else { st = '—'; }
+                    html += '<tr class="' + cls + '">';
+                    html += '<td>' + esc(it.source_name) + '</td>';
+                    html += '<td>' + esc(it.type || '—') + '</td>';
+                    html += '<td>' + esc(it.size_raw || '—') + '</td>';
+                    html += '<td>' + esc(it.qty) + '</td>';
+                    html += '<td>' + st + '</td>';
+                    html += '<td><span class="pjo-build-target">' + (it.target_dir ? esc(it.target_dir) + '/' : '') + esc(it.target_filename || it.target_base || '') + '</span></td>';
+                    html += '</tr>';
+                });
+                html += '</tbody></table>';
+
+                html += '<div class="pjo-build-actions">';
+                if (okCount > 0) {
+                    html += '<button class="button button-primary pjo-build-exec" data-order="' + orderId + '">▶ Wykonaj na QNAP (' + okCount + ' plik(ów))</button>';
+                } else {
+                    html += '<em>Brak plików gotowych do skopiowania (sprawdź dopasowanie nazw / magazyn źródłowy).</em>';
+                }
+                html += '<span style="font-size:12px;color:#555;">Gotowe: <strong class="pjo-st-ok">' + okCount + '</strong> · Brak źródła: <strong class="pjo-st-missing">' + missCount + '</strong> · Pominięte: <strong>' + skipCount + '</strong></span>';
+                html += '<span class="pjo-build-exec-result" style="font-size:12px;"></span>';
+                html += '</div>';
+                box.innerHTML = html;
+            }
+
+            document.querySelectorAll('.pjo-build-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var orderId = btn.getAttribute('data-order');
+                    var row = document.getElementById('pjo-build-' + orderId);
+                    var box = row.querySelector('.pjo-build-content');
+                    if (row.style.display === 'table-row') { row.style.display = 'none'; return; }
+                    row.style.display = 'table-row';
+                    box.innerHTML = '⏳ Łączę z QNAP, indeksuję magazyn i buduję plan… (może chwilę potrwać)';
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_build_preview');
+                    fd.append('nonce', nonce);
+                    fd.append('order_id', orderId);
+                    fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j) {
+                            if (!j.success) { box.innerHTML = '<div class="pjo-warn">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</div>'; return; }
+                            renderPlan(box, j.data);
+                        })
+                        .catch(function(e){ box.innerHTML = '❌ ' + esc(e.message); });
+                });
+            });
+
+            // Execute (delegacja — przycisk renderowany dynamicznie)
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('.pjo-build-exec') : null;
+                if (!b) return;
+                var orderId = b.getAttribute('data-order');
+                if (!confirm('Skopiować i przemianować pliki na QNAP wg planu? Operacja tworzy foldery i kopiuje pliki w magazynie druku.')) return;
+                var resultSpan = b.parentNode.querySelector('.pjo-build-exec-result');
+                b.disabled = true; b.textContent = '⏳ Kopiuję na QNAP…';
+                var fd = new FormData();
+                fd.append('action', 'pjo_build_execute');
+                fd.append('nonce', nonce);
+                fd.append('order_id', orderId);
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j) {
+                        b.disabled = false;
+                        if (!j.success) { b.textContent = '▶ Wykonaj na QNAP'; if (resultSpan) resultSpan.innerHTML = ' <span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                        var d = j.data;
+                        b.textContent = '✅ Gotowe (' + d.copied + ')';
+                        var errs = (d.errors && d.errors.length) ? ' · <span class="pjo-st-error">błędy: ' + d.errors.length + '</span>' : '';
+                        if (resultSpan) resultSpan.innerHTML = ' Skopiowano <strong>' + d.copied + '</strong>, folderów: ' + d.created_dirs + errs + ' → <code>' + esc(d.base_path) + '</code>';
+                    })
+                    .catch(function(e){ b.disabled = false; b.textContent = '▶ Wykonaj na QNAP'; if (resultSpan) resultSpan.innerHTML = ' <span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
+            });
         })();
         </script>
         <?php
@@ -463,8 +635,14 @@ class PhotoJob_Orders_Dashboard {
                     <span class="pjo-note-badge" title="<?php echo esc_attr( $customer_note ); ?>">📝</span>
                 <?php endif; ?>
             </td>
-            <td>
-                <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank" class="button button-small">↗</a>
+            <td style="white-space:nowrap;">
+                <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank" class="button button-small" title="<?php esc_attr_e( 'Edytuj w WooCommerce', 'photojob-organizer' ); ?>">↗</a>
+                <?php if ( ! $is_worker ) : ?>
+                    <button class="button button-small pjo-build-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Zbuduj folder druku na QNAP', 'photojob-organizer' ); ?>">🗂</button>
+                <?php endif; ?>
+                <?php if ( ! empty( $meta['qnap_folder_path'] ) ) : ?>
+                    <span class="pjo-built-flag" title="<?php echo esc_attr( $meta['qnap_folder_path'] ); ?>">✅</span>
+                <?php endif; ?>
             </td>
         </tr>
         <tr id="pjo-items-<?php echo esc_attr( $oid ); ?>" class="pjo-line-items-row" style="display:none;">
@@ -472,6 +650,13 @@ class PhotoJob_Orders_Dashboard {
                 <div class="pjo-line-items-content" data-loaded="0"></div>
             </td>
         </tr>
+        <?php if ( ! $is_worker ) : ?>
+        <tr id="pjo-build-<?php echo esc_attr( $oid ); ?>" class="pjo-build-row" style="display:none;">
+            <td colspan="11">
+                <div class="pjo-build-content" data-order="<?php echo esc_attr( $oid ); ?>"></div>
+            </td>
+        </tr>
+        <?php endif; ?>
         <?php
     }
 

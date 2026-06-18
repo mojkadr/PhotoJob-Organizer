@@ -1,5 +1,36 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.5.0] — 2026-06-18 — Faza C: Folder Builder (QNAP)
+
+### Added
+- **Folder Builder** — generuje strukturę druku na QNAP wprost z zamówienia WC, eliminuje
+  ręczne dopisywanie prefiksów `15x23-1x_10316_`. Konwencja:
+  `{Sezon}/{NrZam}/{Typ}/{Rozmiar}/{rozmiar}-{ilość}x_{nrZam}_{nazwa}.{ext}`
+- **PhotoJob_QNAP_Client** (`includes/class-pjo-qnap-client.php`) — klient File Station API:
+  - login (reużyty wzorzec auth z testu QNAP: `authLogin.cgi` → `authSid`)
+  - `make_path` (mkdir -p), `copy_file`, `rename_file`, `get_list`, `folder_exists`
+  - **`index_source_files`** — rekurencyjny indeks magazynu źródłowego (basename→ścieżka),
+    z limitami bezpieczeństwa (200k plików / głębokość 14)
+  - bezpośredni cURL (omija WP HTTP middleware — lekcja v1.3.3), obsługa formatów v4/v5
+- **PhotoJob_Folder_Builder** (`includes/class-pjo-folder-builder.php`) — silnik:
+  - `build_plan()` — zamówienie → plan (sezon z kategorii, Typ+Rozmiar z meta WAPF,
+    nazwa pliku = nazwa produktu WC); **dry-run** dopasowuje pliki źródłowe na QNAP
+  - `execute_plan()` — tworzy foldery + kopiuje + przemianowuje pliki na QNAP
+  - zapis bazowej ścieżki do `pjo_order_meta.qnap_folder_path`
+- **Dashboard zamówień**: przycisk **🗂** w kolumnie Akcje → panel z planem (podgląd
+  dopasowania źródeł) + przycisk **▶ Wykonaj na QNAP**; flaga ✅ gdy folder już zbudowany
+- **Ustawienia → QNAP**: nowe pole **Ścieżka budowania druku** (`print_build_path`, default `/MójKadr/Druk`)
+
+### Decisions (2026-06-18)
+- Wykonanie: **fizycznie na QNAP** przez File Station API (nie sam plan)
+- Nazwa pliku: **nazwa produktu WC = nazwa pliku zdjęcia** (tak tworzy je photo-adder)
+- Bezpiecznik: **dry-run/podgląd przed wykonaniem** — każdy plik źródłowy weryfikowany
+  w magazynie zanim cokolwiek się kopiuje
+
+### DB
+- DB_VERSION → 1.4.0 (migracja seeduje `print_build_path` do istniejącego `pjo_settings_qnap`;
+  bez zmian schematu tabel — `qnap_folder_path` istniał od v1.3.0)
+
 ## [1.4.0] — 2026-06-09 — Faza B: Dashboard zamówień
 
 ### Added

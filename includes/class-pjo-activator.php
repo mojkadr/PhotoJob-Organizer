@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class PhotoJob_Activator {
 
-    const DB_VERSION = '1.3.0';
+    const DB_VERSION = '1.4.0';
     const DB_VERSION_OPTION = 'pjo_db_version';
 
     public static function activate() {
@@ -150,12 +150,20 @@ class PhotoJob_Activator {
         delete_option( 'pjo_settings_product_map' );
         if ( false === get_option( 'pjo_settings_qnap' ) ) {
             add_option( 'pjo_settings_qnap', array(
-                'host'       => '',
-                'port'       => 443,
-                'user'       => '',
-                'share_path' => '/MójKadr/Klienci',
-                'source_path' => '/MójKadr/Sesje',
+                'host'             => '',
+                'port'             => 443,
+                'user'             => '',
+                'share_path'       => '/MójKadr/Klienci',
+                'source_path'      => '/MójKadr/Sesje',
+                'print_build_path' => '/MójKadr/Druk',
             ) );
+        } else {
+            // Migracja v1.5.0 (Faza C): dorzuć print_build_path jeśli brak.
+            $qnap = get_option( 'pjo_settings_qnap', array() );
+            if ( ! isset( $qnap['print_build_path'] ) || $qnap['print_build_path'] === '' ) {
+                $qnap['print_build_path'] = '/MójKadr/Druk';
+                update_option( 'pjo_settings_qnap', $qnap );
+            }
         }
         if ( false === get_option( 'pjo_settings_labels' ) ) {
             add_option( 'pjo_settings_labels', array(

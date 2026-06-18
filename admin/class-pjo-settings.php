@@ -98,9 +98,10 @@ class PhotoJob_Settings {
             'use_ssl'        => isset( $_POST['qnap_use_ssl'] ) ? 1 : 0,
             'verify_ssl'     => isset( $_POST['qnap_verify_ssl'] ) ? 1 : 0,
             'user'           => sanitize_text_field( $_POST['qnap_user'] ?? '' ),
-            'share_path'     => sanitize_text_field( $_POST['qnap_share_path'] ?? '' ),
-            'source_path'    => sanitize_text_field( $_POST['qnap_source_path'] ?? '' ),
-            'password_const' => sanitize_text_field( $_POST['qnap_password_const'] ?? '' ),
+            'share_path'       => sanitize_text_field( $_POST['qnap_share_path'] ?? '' ),
+            'source_path'      => sanitize_text_field( $_POST['qnap_source_path'] ?? '' ),
+            'print_build_path' => sanitize_text_field( $_POST['qnap_print_build_path'] ?? '' ),
+            'password_const'   => sanitize_text_field( $_POST['qnap_password_const'] ?? '' ),
         );
         // Hasło — jeśli user wpisał nowe, szyfruj i zapisz. Jeśli puste — zachowaj stare.
         $new_password = $_POST['qnap_password'] ?? '';
@@ -546,7 +547,7 @@ class PhotoJob_Settings {
 
     private function render_tab_qnap() {
         $q = wp_parse_args( get_option( 'pjo_settings_qnap', array() ), array(
-            'host' => '', 'port' => 443, 'use_ssl' => 1, 'verify_ssl' => 0, 'user' => '', 'share_path' => '', 'source_path' => '', 'password_const' => '', 'password_encrypted' => '',
+            'host' => '', 'port' => 443, 'use_ssl' => 1, 'verify_ssl' => 0, 'user' => '', 'share_path' => '', 'source_path' => '', 'print_build_path' => '/MójKadr/Druk', 'password_const' => '', 'password_encrypted' => '',
         ) );
         $has_stored_password = ! empty( $q['password_encrypted'] );
         $const_defined = $q['password_const'] && defined( $q['password_const'] );
@@ -581,7 +582,13 @@ class PhotoJob_Settings {
             <tr><th><label for="qnap_share_path"><?php _e( 'Ścieżka folderów klientów', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_share_path" name="qnap_share_path" value="<?php echo esc_attr( $q['share_path'] ); ?>"></td></tr>
             <tr><th><label for="qnap_source_path"><?php _e( 'Ścieżka magazynu zdjęć', 'photojob-organizer' ); ?></label></th>
-                <td><input type="text" class="regular-text" id="qnap_source_path" name="qnap_source_path" value="<?php echo esc_attr( $q['source_path'] ); ?>"></td></tr>
+                <td><input type="text" class="regular-text" id="qnap_source_path" name="qnap_source_path" value="<?php echo esc_attr( $q['source_path'] ); ?>">
+                    <p class="description"><?php _e( 'Źródło — tu leżą oryginały sesji (Folder Builder szuka tu plików po nazwie produktu).', 'photojob-organizer' ); ?></p>
+                </td></tr>
+            <tr><th><label for="qnap_print_build_path"><?php _e( 'Ścieżka budowania druku', 'photojob-organizer' ); ?></label></th>
+                <td><input type="text" class="regular-text" id="qnap_print_build_path" name="qnap_print_build_path" value="<?php echo esc_attr( $q['print_build_path'] ); ?>" placeholder="/MójKadr/Druk">
+                    <p class="description"><?php _e( 'Cel — Folder Builder tworzy tu strukturę <code>{Sezon}/{NrZam}/{Typ}/{Rozmiar}/…</code> i kopiuje przemianowane pliki do druku.', 'photojob-organizer' ); ?></p>
+                </td></tr>
             <tr><th><label for="qnap_password_const"><?php _e( 'Stała PHP z hasłem (opcjonalnie)', 'photojob-organizer' ); ?></label></th>
                 <td>
                     <input type="text" class="regular-text" id="qnap_password_const" name="qnap_password_const" value="<?php echo esc_attr( $q['password_const'] ); ?>" placeholder="np. PJO_QNAP_PASSWORD">
