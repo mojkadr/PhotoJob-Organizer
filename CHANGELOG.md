@@ -1,5 +1,17 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.5.1] — 2026-06-18 — Dashboard UX (uwagi do panelu)
+
+### Added
+- **Bank domyślny** — gdy zamówienie nie ma przypisanego banku, dropdown pokazuje
+  domyślnie pierwszy z listy (np. mBank) zamiast „— wybierz —”. *(Pod bramki płatnicze
+  BLIK/Stripe/Montonio — osobne zadanie roadmapy.)*
+- **Wersja elektroniczna → auto-zamknięcie** — nowy etap produkcji **📧 Link wysłany**;
+  gdy zamówienie zawiera WYŁĄCZNIE wersje elektroniczne (brak odbitek do druku), ustawienie
+  tego etapu od razu zmienia status WC na **Zrealizowane** (helper `order_is_electronic_only()`).
+- **Lightbox miniatur** — w rozwiniętym zamówieniu klik w miniaturę otwiera duży podgląd
+  (overlay, Esc/klik zamyka) — szybka wizualna identyfikacja zdjęcia.
+
 ## [1.5.0] — 2026-06-18 — Faza C: Folder Builder (QNAP)
 
 ### Added

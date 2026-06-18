@@ -147,7 +147,7 @@ class PhotoJob_Orders_Dashboard {
                 break;
 
             case 'production_status':
-                $allowed_ps = array( 'pending', 'sent_to_lab', 'received_from_lab', 'incomplete', 'ready_to_pack', 'shipped' );
+                $allowed_ps = self::production_statuses_all();
                 $ps = sanitize_key( $value );
                 if ( ! in_array( $ps, $allowed_ps, true ) ) {
                     wp_send_json_error( array( 'message' => 'Invalid production status' ) );
@@ -158,7 +158,19 @@ class PhotoJob_Orders_Dashboard {
                 } else {
                     $wpdb->insert( $meta_table, array( 'order_id' => $order_id, 'production_status' => $ps ) );
                 }
-                wp_send_json_success( array( 'value' => $ps, 'label' => self::production_status_label( $ps ) ) );
+                // #2: zamówienie TYLKO z wersjami elektronicznymi + "Link wysłany" → zamknij od razu (Zrealizowane).
+                $wc_completed = false;
+                if ( $ps === 'link_sent' && self::order_is_electronic_only( $order ) && $order->get_status() !== 'completed' ) {
+                    $order->update_status( 'completed', __( '[PJO] Wersja elektroniczna — link wysłany do klienta.', 'photojob-organizer' ) );
+                    $wc_completed = true;
+                }
+                wp_send_json_success( array(
+                    'value'        => $ps,
+                    'label'        => self::production_status_label( $ps ),
+                    'wc_completed' => $wc_completed,
+                    'wc_status'    => 'wc-' . $order->get_status(),
+                    'wc_label'     => wc_get_order_status_name( 'wc-' . $order->get_status() ),
+                ) );
                 break;
 
             default:
@@ -183,11 +195,16 @@ class PhotoJob_Orders_Dashboard {
             $qty = $item->get_quantity();
             $total = $item->get_total();
             $thumb = '';
+            $thumb_large = '';
             $categories_path = '';
             if ( $product ) {
                 $thumb_id = $product->get_image_id();
                 if ( $thumb_id ) {
                     $thumb = wp_get_attachment_image_url( $thumb_id, 'thumbnail' );
+                    $thumb_large = wp_get_attachment_image_url( $thumb_id, 'large' );
+                    if ( ! $thumb_large ) {
+                        $thumb_large = wp_get_attachment_image_url( $thumb_id, 'full' );
+                    }
                 }
                 $cats = wp_get_post_terms( $product->get_id(), 'product_cat', array( 'fields' => 'names' ) );
                 $categories_path = implode( ' › ', $cats );
@@ -207,13 +224,14 @@ class PhotoJob_Orders_Dashboard {
                 }
             }
             $items[] = array(
-                'item_id'    => $item_id,
-                'name'       => $product_name,
-                'qty'        => $qty,
-                'total'      => wc_price( $total ),
-                'thumb'      => $thumb,
-                'extras'     => $extras,
-                'categories' => $categories_path,
+                'item_id'     => $item_id,
+                'name'        => $product_name,
+                'qty'         => $qty,
+                'total'       => wc_price( $total ),
+                'thumb'       => $thumb,
+                'thumb_large' => $thumb_large,
+                'extras'      => $extras,
+                'categories'  => $categories_path,
             );
         }
         wp_send_json_success( array( 'items' => $items ) );
@@ -229,12 +247,35 @@ class PhotoJob_Orders_Dashboard {
             'incomplete'        => __( '⚠ Niekompletne', 'photojob-organizer' ),
             'ready_to_pack'     => __( '📦 Do spakowania', 'photojob-organizer' ),
             'shipped'           => __( '✅ Wysłane do klienta', 'photojob-organizer' ),
+            'link_sent'         => __( '📧 Link wysłany', 'photojob-organizer' ),
         );
         return $map[ $status ] ?? $status;
     }
 
     public static function production_statuses_all() {
-        return array( 'pending', 'sent_to_lab', 'received_from_lab', 'incomplete', 'ready_to_pack', 'shipped' );
+        return array( 'pending', 'sent_to_lab', 'received_from_lab', 'incomplete', 'ready_to_pack', 'shipped', 'link_sent' );
+    }
+
+    /**
+     * #2: Czy zamówienie zawiera WYŁĄCZNIE wersje elektroniczne (brak odbitek do druku)?
+     * Heurystyka spójna z Folder Builderem: pozycja "do druku" ma meta z rozmiarem (\d+x\d+).
+     */
+    public static function order_is_electronic_only( $order ) {
+        $has_any = false;
+        foreach ( $order->get_items() as $item ) {
+            $has_any = true;
+            foreach ( $item->get_meta_data() as $meta ) {
+                if ( $meta->key === '' || substr( $meta->key, 0, 1 ) === '_' ) {
+                    continue;
+                }
+                $v = is_string( $meta->value ) ? $meta->value : maybe_serialize( $meta->value );
+                $v = wp_strip_all_tags( $v );
+                if ( preg_match( '/\d+\s*[x×]\s*\d+/u', $v ) ) {
+                    return false; // znaleziono rozmiar → jest druk
+                }
+            }
+        }
+        return $has_any; // ma pozycje, ale żadna nie ma rozmiaru → tylko elektroniczne
     }
 
     /** ============ RENDER ============ */
@@ -388,6 +429,12 @@ class PhotoJob_Orders_Dashboard {
         .pjo-st-missing { color:#c92a2a; font-weight:bold; }
         .pjo-st-skip { color:#888; }
         .pjo-st-error { color:#c92a2a; font-weight:bold; }
+        .pjo-line-item img.pjo-thumb { cursor:zoom-in; transition:transform .08s; }
+        .pjo-line-item img.pjo-thumb:hover { transform:scale(1.05); border-color:#2271b1; }
+        .pjo-lightbox { position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:100000; align-items:center; justify-content:center; cursor:zoom-out; }
+        .pjo-lightbox-inner { max-width:92vw; max-height:92vh; text-align:center; }
+        .pjo-lightbox-inner img { max-width:92vw; max-height:84vh; object-fit:contain; box-shadow:0 4px 40px rgba(0,0,0,.6); border:3px solid #fff; border-radius:4px; }
+        .pjo-lightbox-cap { color:#fff; margin-top:10px; font-size:14px; }
         </style>
 
         <script>
@@ -421,7 +468,7 @@ class PhotoJob_Orders_Dashboard {
                             var html = '';
                             j.data.items.forEach(function(it) {
                                 html += '<div class="pjo-line-item">';
-                                if (it.thumb) html += '<img src="' + it.thumb + '" width="60" height="60" style="object-fit:cover;">';
+                                if (it.thumb) html += '<img src="' + it.thumb + '" width="60" height="60" style="object-fit:cover;" class="pjo-thumb" data-large="' + (it.thumb_large || it.thumb) + '" data-name="' + (it.name||'').replace(/"/g,'&quot;') + '" title="Kliknij, by powiększyć">';
                                 html += '<div style="flex:1;">';
                                 html += '<strong>' + (it.name||'').replace(/</g,'&lt;') + '</strong>';
                                 if (it.cats) html += ' <span class="cats">' + it.cats.replace(/</g,'&lt;') + '</span>';
@@ -471,9 +518,36 @@ class PhotoJob_Orders_Dashboard {
                                 tr.className = tr.className.replace(/status-wc-\S+/g, '').trim();
                                 tr.classList.add('status-' + value);
                             }
+                            // #2: "Link wysłany" zamknął e-only zamówienie → odśwież status WC w wierszu
+                            if (field === 'production_status' && j.data && j.data.wc_completed) {
+                                var tr2 = sel.closest('tr');
+                                var statusSel = tr2.querySelector('select[data-field="status"]');
+                                if (statusSel) { statusSel.value = j.data.wc_status; statusSel.setAttribute('data-original', j.data.wc_status); }
+                                tr2.className = tr2.className.replace(/status-wc-\S+/g, '').trim();
+                                tr2.classList.add('status-' + j.data.wc_status);
+                            }
                         })
                         .catch(function(e) { sel.disabled = false; alert(e.message); });
                 });
+            });
+
+            // ===== #5 Lightbox (szybkie powiększenie miniatury) =====
+            var lb = document.createElement('div');
+            lb.className = 'pjo-lightbox';
+            lb.innerHTML = '<div class="pjo-lightbox-inner"><img src=""><div class="pjo-lightbox-cap"></div></div>';
+            lb.style.display = 'none';
+            document.body.appendChild(lb);
+            function closeLb(){ lb.style.display = 'none'; lb.querySelector('img').src = ''; }
+            lb.addEventListener('click', closeLb);
+            document.addEventListener('keydown', function(e){ if (e.key === 'Escape') closeLb(); });
+            document.addEventListener('click', function(e) {
+                var t = e.target.closest ? e.target.closest('.pjo-thumb') : null;
+                if (!t) return;
+                var large = t.getAttribute('data-large');
+                if (!large) return;
+                lb.querySelector('img').src = large;
+                lb.querySelector('.pjo-lightbox-cap').textContent = t.getAttribute('data-name') || '';
+                lb.style.display = 'flex';
             });
 
             // ===== Folder Builder (Faza C) =====
@@ -610,10 +684,14 @@ class PhotoJob_Orders_Dashboard {
                     </select>
                 </td>
                 <td>
+                    <?php
+                    // #1: brak zapisanego banku → domyślnie pierwszy z listy (np. mBank).
+                    $bank_display = $bank !== '' ? $bank : ( ! empty( $banks ) ? (string) reset( $banks ) : '' );
+                    ?>
                     <select class="pjo-inline-edit" data-order="<?php echo esc_attr( $oid ); ?>" data-field="bank" data-original="<?php echo esc_attr( $bank ); ?>">
                         <option value=""><?php _e( '— wybierz —', 'photojob-organizer' ); ?></option>
                         <?php foreach ( $banks as $b ) : ?>
-                            <option value="<?php echo esc_attr( $b ); ?>" <?php selected( $bank, $b ); ?>><?php echo esc_html( $b ); ?></option>
+                            <option value="<?php echo esc_attr( $b ); ?>" <?php selected( $bank_display, $b ); ?>><?php echo esc_html( $b ); ?></option>
                         <?php endforeach; ?>
                     </select>
                 </td>
