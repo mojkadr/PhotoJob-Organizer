@@ -34,12 +34,14 @@ class PhotoJob_Folder_Builder {
      *
      * @param int                     $order_id
      * @param PhotoJob_QNAP_Client|null $qnap  Jeśli podany → dry-run: dopasowuje pliki źródłowe.
+     * @param string|null             $batch_number  Numer wydruku (26ZiNMW1) — root /Druk/{number}/...
+     *                                              Null = podgląd bez numeru (nadawany przy execute).
      * @return array {
      *   order_no:string, season:string, build_root:string,
      *   items: array<array{...}>, warnings: string[]
      * }|WP_Error
      */
-    public static function build_plan( $order_id, $qnap = null ) {
+    public static function build_plan( $order_id, $qnap = null, $batch_number = null ) {
         if ( ! function_exists( 'wc_get_order' ) ) {
             return new WP_Error( 'no_wc', __( 'WooCommerce nieaktywne.', 'photojob-organizer' ) );
         }
@@ -52,6 +54,10 @@ class PhotoJob_Folder_Builder {
         $build_root = isset( $qopt['print_build_path'] ) && $qopt['print_build_path'] !== ''
             ? '/' . trim( $qopt['print_build_path'], '/' )
             : '/MójKadr/Druk';
+        // #4: numer wydruku staje się głównym folderem paczki na QNAP.
+        if ( $batch_number ) {
+            $build_root .= '/' . self::fs_safe( $batch_number );
+        }
         $source_root = isset( $qopt['source_path'] ) && $qopt['source_path'] !== ''
             ? '/' . trim( $qopt['source_path'], '/' )
             : '/MójKadr/Sesje';
@@ -162,82 +168,205 @@ class PhotoJob_Folder_Builder {
         }
 
         return array(
-            'order_id'    => $order_id,
-            'order_no'    => $order_no,
-            'season'      => $season,
-            'build_root'  => $build_root,
-            'source_root' => $source_root,
-            'items'       => $items,
-            'warnings'    => $warnings,
-            'indexed'     => is_array( $source_index ) ? count( $source_index ) : null,
+            'order_id'     => $order_id,
+            'order_no'     => $order_no,
+            'season'       => $season,
+            'build_root'   => $build_root,
+            'source_root'  => $source_root,
+            'batch_number' => $batch_number,
+            'items'        => $items,
+            'warnings'     => $warnings,
+            'indexed'      => is_array( $source_index ) ? count( $source_index ) : null,
         );
     }
 
     /**
-     * Wykonaj plan na QNAP: utwórz foldery, skopiuj i przemianuj pliki.
+     * Kontekst zamówienia do numeracji wydruku: dominujący klient (root kategorii),
+     * sezon i rok z line items.
      *
-     * @return array {created_dirs:int, copied:int, errors:array, results:array}
+     * @return array [client, season, year]
+     */
+    public static function resolve_order_context( $order_id ) {
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) {
+            return array( 'client' => '', 'season' => '', 'year' => '' );
+        }
+        $client_votes = array();
+        $season_votes = array();
+        $year_votes = array();
+        foreach ( $order->get_items() as $item ) {
+            $product = $item->get_product();
+            if ( ! $product ) {
+                continue;
+            }
+            $info = self::resolve_season_for_product( $product->get_id() );
+            if ( ! empty( $info['season'] ) ) {
+                $season_votes[ $info['season'] ] = ( $season_votes[ $info['season'] ] ?? 0 ) + 1;
+            }
+            if ( ! empty( $info['year'] ) ) {
+                $year_votes[ $info['year'] ] = ( $year_votes[ $info['year'] ] ?? 0 ) + 1;
+            }
+            $client = self::resolve_client_for_product( $product->get_id() );
+            if ( $client !== '' ) {
+                $client_votes[ $client ] = ( $client_votes[ $client ] ?? 0 ) + 1;
+            }
+        }
+        arsort( $client_votes );
+        arsort( $season_votes );
+        arsort( $year_votes );
+        return array(
+            'client' => (string) key( $client_votes ),
+            'season' => (string) key( $season_votes ),
+            'year'   => (string) key( $year_votes ),
+        );
+    }
+
+    /**
+     * Klient = root (najwyższy przodek) kategorii produktu.
+     */
+    private static function resolve_client_for_product( $product_id ) {
+        $terms = wp_get_post_terms( $product_id, 'product_cat', array( 'fields' => 'all' ) );
+        if ( is_wp_error( $terms ) || empty( $terms ) ) {
+            return '';
+        }
+        $map = self::get_term_map();
+        foreach ( $terms as $t ) {
+            $cur = $t;
+            $guard = 0;
+            while ( $cur && $cur->parent && isset( $map[ $cur->parent ] ) && $guard < 20 ) {
+                $cur = $map[ $cur->parent ];
+                $guard++;
+            }
+            if ( $cur ) {
+                return $cur->name;
+            }
+        }
+        return '';
+    }
+
+    /**
+     * Wykonaj plan na QNAP: nadaj numer wydruku, utwórz foldery, skopiuj i przemianuj pliki.
+     * Buduje CAŁĄ grupę pakowania (jeśli zamówienie do niej należy) pod jednym numerem.
+     *
+     * @return array {batch_number, copied, created_dirs, errors, base_path, orders, results}
      */
     public static function execute_plan( $order_id, PhotoJob_QNAP_Client $qnap ) {
-        $plan = self::build_plan( $order_id, $qnap );
-        if ( is_wp_error( $plan ) ) {
-            return array( 'error' => $plan->get_error_message(), 'results' => array() );
-        }
+        // #3: jeśli zamówienie jest w grupie pakowania → budujemy wszystkich członków razem.
+        $member_ids = self::pack_group_members( $order_id );
+
+        // #4: numer wydruku z kontekstu (dominujący klient/sezon/rok grupy).
+        $ctx = self::resolve_order_context( $member_ids[0] );
+        $num = PhotoJob_Print_Batch::generate_number( $ctx['client'], $ctx['season'], $ctx['year'] );
+        $batch_number = $num['number'];
 
         $results = array();
         $copied = 0;
-        $made_dirs = array();
         $errors = array();
+        $made_dirs = array();
+        $build_root = '';
+        $total_files = 0;
 
-        foreach ( $plan['items'] as $row ) {
-            if ( ! empty( $row['skip'] ) ) {
-                $results[] = array( 'name' => $row['source_name'], 'status' => 'skip', 'msg' => $row['reason'] );
+        foreach ( $member_ids as $mid ) {
+            $plan = self::build_plan( $mid, $qnap, $batch_number );
+            if ( is_wp_error( $plan ) ) {
+                $results[] = array( 'name' => '#' . $mid, 'status' => 'error', 'msg' => $plan->get_error_message() );
+                $errors[] = '#' . $mid;
                 continue;
             }
-            if ( $row['source_found'] !== true ) {
-                $results[] = array( 'name' => $row['source_name'], 'status' => 'missing', 'msg' => $row['reason'] );
-                $errors[] = $row['source_name'];
-                continue;
-            }
+            $build_root = $plan['build_root'];
 
-            $dest_dir = $row['target_dir_full'];
-            // mkdir -p (cache utworzonych ścieżek w obrębie tego wykonania)
-            if ( ! isset( $made_dirs[ $dest_dir ] ) ) {
-                if ( ! $qnap->make_path( $dest_dir ) ) {
-                    $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Folder: ', 'photojob-organizer' ) . $qnap->last_error );
+            foreach ( $plan['items'] as $row ) {
+                if ( ! empty( $row['skip'] ) ) {
+                    $results[] = array( 'name' => $row['source_name'], 'status' => 'skip', 'msg' => $row['reason'], 'order' => $plan['order_no'] );
+                    continue;
+                }
+                if ( $row['source_found'] !== true ) {
+                    $results[] = array( 'name' => $row['source_name'], 'status' => 'missing', 'msg' => $row['reason'], 'order' => $plan['order_no'] );
                     $errors[] = $row['source_name'];
                     continue;
                 }
-                $made_dirs[ $dest_dir ] = true;
+                $dest_dir = $row['target_dir_full'];
+                if ( ! isset( $made_dirs[ $dest_dir ] ) ) {
+                    if ( ! $qnap->make_path( $dest_dir ) ) {
+                        $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Folder: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
+                        $errors[] = $row['source_name'];
+                        continue;
+                    }
+                    $made_dirs[ $dest_dir ] = true;
+                }
+                if ( ! $qnap->copy_file( $row['source_dir'], $row['source_file'], $dest_dir, true ) ) {
+                    $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Kopia: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
+                    $errors[] = $row['source_name'];
+                    continue;
+                }
+                if ( ! $qnap->rename_file( $dest_dir, $row['source_file'], $row['target_filename'] ) ) {
+                    $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Rename: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
+                    $errors[] = $row['source_name'];
+                    continue;
+                }
+                $copied++;
+                $total_files++;
+                $results[] = array( 'name' => $row['source_name'], 'status' => 'ok', 'msg' => $row['target_full'], 'order' => $plan['order_no'] );
             }
 
-            // copy (zachowuje nazwę źródłową) → rename na docelową
-            if ( ! $qnap->copy_file( $row['source_dir'], $row['source_file'], $dest_dir, true ) ) {
-                $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Kopia: ', 'photojob-organizer' ) . $qnap->last_error );
-                $errors[] = $row['source_name'];
-                continue;
-            }
-            if ( ! $qnap->rename_file( $dest_dir, $row['source_file'], $row['target_filename'] ) ) {
-                $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Rename: ', 'photojob-organizer' ) . $qnap->last_error );
-                $errors[] = $row['source_name'];
-                continue;
-            }
-            $copied++;
-            $results[] = array( 'name' => $row['source_name'], 'status' => 'ok', 'msg' => $row['target_full'] );
+            // Zapisz ścieżkę + stempel numeru wydruku przy każdym zamówieniu.
+            $order_base = $build_root . '/' . trim( $plan['season'], '/' ) . '/' . $plan['order_no'];
+            self::save_order_folder_path( $mid, $order_base );
+            self::stamp_print_batch( $mid, $batch_number );
         }
 
-        // Zapisz ścieżkę bazową w pjo_order_meta.qnap_folder_path
-        $base_path = $plan['build_root'] . '/' . trim( $plan['season'], '/' ) . '/' . $plan['order_no'];
-        self::save_order_folder_path( $order_id, $base_path );
+        // Rekord wydruku (jeśli cokolwiek skopiowano albo żeby zarezerwować numer).
+        if ( $copied > 0 ) {
+            PhotoJob_Print_Batch::save( array(
+                'number'          => $batch_number,
+                'client_initials' => $num['client_initials'],
+                'season_letter'   => $num['season_letter'],
+                'year2'           => $num['year2'],
+                'qnap_path'       => $build_root,
+                'order_ids'       => $member_ids,
+                'file_count'      => $total_files,
+                'status'          => empty( $errors ) ? 'built' : 'partial',
+            ) );
+        }
 
         return array(
-            'order_no'     => $plan['order_no'],
+            'batch_number' => $batch_number,
             'copied'       => $copied,
             'created_dirs' => count( $made_dirs ),
             'errors'       => $errors,
-            'base_path'    => $base_path,
+            'base_path'    => $build_root,
+            'orders'       => $member_ids,
             'results'      => $results,
         );
+    }
+
+    /**
+     * Członkowie grupy pakowania zamówienia — albo grupa, albo samo zamówienie.
+     *
+     * @return int[]
+     */
+    public static function pack_group_members( $order_id ) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pjo_order_meta';
+        $group = $wpdb->get_var( $wpdb->prepare( "SELECT pack_group FROM {$table} WHERE order_id=%d", $order_id ) );
+        if ( $group && class_exists( 'PhotoJob_Duplicates' ) ) {
+            $members = PhotoJob_Duplicates::group_members( $group );
+            if ( ! empty( $members ) ) {
+                return $members;
+            }
+        }
+        return array( (int) $order_id );
+    }
+
+    private static function stamp_print_batch( $order_id, $number ) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pjo_order_meta';
+        $exists = $wpdb->get_var( $wpdb->prepare( "SELECT order_id FROM {$table} WHERE order_id=%d", $order_id ) );
+        if ( $exists ) {
+            $wpdb->update( $table, array( 'print_batch' => $number ), array( 'order_id' => $order_id ) );
+        } else {
+            $wpdb->insert( $table, array( 'order_id' => $order_id, 'print_batch' => $number ) );
+        }
     }
 
     /**

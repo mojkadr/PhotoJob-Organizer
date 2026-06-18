@@ -1,5 +1,29 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.0] — 2026-06-18 — Grupy pakowania (#3) + Wydruki/numeracja (#4)
+
+### Added — #3 Grupy pakowania (wykrywanie dubli)
+- **PhotoJob_Duplicates** — wykrywa zamówienia W REALIZACJI dzielące ten sam e-mail
+  LUB imię+nazwisko → klastry (cache 5 min). Niedestrukcyjne łączenie w **grupę
+  pakowania** (`pack_group` w `pjo_order_meta`) — zamówienia zostają osobne w WC.
+- **Dashboard**: checkbox przy kliencie + pasek „📦 Połącz w grupę pakowania",
+  badge **👥 dubel** (tooltip z numerami bliźniaków), badge **📦 PACK-xxxx** (klik = rozłącz).
+
+### Added — #4 Wydruki + numeracja
+- **PhotoJob_Print_Batch** — numer wydruku `YY + inicjały firmy + litera sezonu +
+  GLOBALNY licznik` → `26ZiNMW1`. Licznik atomowy (ON DUPLICATE KEY), nigdy się nie resetuje.
+- **Integracja z Folder Builderem**: „Wykonaj na QNAP" nadaje numer wydruku, buduje pod
+  `/Druk/{numer}/{Sezon}/{NrZam}/...`, **buduje CAŁĄ grupę pakowania** pod jednym numerem
+  (jedna koperta), stempluje `print_batch` przy każdym zamówieniu, zapisuje rekord wydruku.
+- **Dashboard**: badge **🖨 26ZiNMW1** przy zamówieniu (szybka kontrola „zamówione do druku");
+  panel buildera pokazuje plany wszystkich zamówień grupy + nadany numer po wykonaniu.
+- Tabela **pjo_print_batches** (number unikalny, order_ids, file_count, qnap_path).
+- Memoizacja indeksu magazynu w kliencie QNAP (grupa N zamówień = 1 skan źródła).
+
+### DB
+- DB_VERSION → 1.5.0: `pjo_order_meta` +`pack_group` +`print_batch` (+indeksy);
+  nowa tabela `pjo_print_batches`.
+
 ## [1.5.1] — 2026-06-18 — Dashboard UX (uwagi do panelu)
 
 ### Added

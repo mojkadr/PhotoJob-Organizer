@@ -37,6 +37,36 @@ class PhotoJob_Orders_Dashboard {
         add_action( 'wp_ajax_pjo_get_line_items', array( $this, 'ajax_get_line_items' ) );
         add_action( 'wp_ajax_pjo_build_preview', array( $this, 'ajax_build_preview' ) );
         add_action( 'wp_ajax_pjo_build_execute', array( $this, 'ajax_build_execute' ) );
+        add_action( 'wp_ajax_pjo_link_pack_group', array( $this, 'ajax_link_pack_group' ) );
+        add_action( 'wp_ajax_pjo_unlink_pack_group', array( $this, 'ajax_unlink_pack_group' ) );
+    }
+
+    /** ============ GRUPY PAKOWANIA (#3) ============ */
+
+    public function ajax_link_pack_group() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $ids = isset( $_POST['order_ids'] ) ? array_map( 'absint', (array) $_POST['order_ids'] ) : array();
+        $res = PhotoJob_Duplicates::link_group( $ids );
+        if ( is_wp_error( $res ) ) {
+            wp_send_json_error( array( 'message' => $res->get_error_message() ) );
+        }
+        wp_send_json_success( $res );
+    }
+
+    public function ajax_unlink_pack_group() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $order_id = absint( $_POST['order_id'] ?? 0 );
+        if ( ! $order_id ) {
+            wp_send_json_error( array( 'message' => 'Bad request' ) );
+        }
+        PhotoJob_Duplicates::unlink( $order_id );
+        wp_send_json_success( array( 'order_id' => $order_id ) );
     }
 
     /** ============ FOLDER BUILDER (Faza C) ============ */
@@ -63,12 +93,24 @@ class PhotoJob_Orders_Dashboard {
             wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP nieudane: ', 'photojob-organizer' ) . $qnap->last_error ) );
         }
 
-        $plan = PhotoJob_Folder_Builder::build_plan( $order_id, $qnap );
-        $qnap->logout();
-        if ( is_wp_error( $plan ) ) {
-            wp_send_json_error( array( 'message' => $plan->get_error_message() ) );
+        // #3: jeśli zamówienie w grupie pakowania → podgląd całej grupy (jeden numer przy Wykonaj).
+        $member_ids = PhotoJob_Folder_Builder::pack_group_members( $order_id );
+        $plans = array();
+        foreach ( $member_ids as $mid ) {
+            $p = PhotoJob_Folder_Builder::build_plan( $mid, $qnap ); // bez numeru — nadawany przy execute
+            if ( ! is_wp_error( $p ) ) {
+                $plans[] = $p;
+            }
         }
-        wp_send_json_success( $plan );
+        $qnap->logout();
+        if ( empty( $plans ) ) {
+            wp_send_json_error( array( 'message' => __( 'Nie udało się zbudować planu.', 'photojob-organizer' ) ) );
+        }
+        wp_send_json_success( array(
+            'is_group' => count( $member_ids ) > 1,
+            'members'  => $member_ids,
+            'plans'    => $plans,
+        ) );
     }
 
     /**
@@ -306,6 +348,8 @@ class PhotoJob_Orders_Dashboard {
         $banks = get_option( 'pjo_settings_banks', array() );
         $wc_statuses = wc_get_order_statuses();
         $prod_statuses = self::production_statuses_all();
+        // #3: klastry dubli (mail/nazwisko) — tylko dla zarządzających.
+        $clusters = ( ! $is_worker && class_exists( 'PhotoJob_Duplicates' ) ) ? PhotoJob_Duplicates::get_clusters() : array();
         ?>
         <div class="wrap pjo-dashboard">
             <h1><?php _e( 'Zamówienia', 'photojob-organizer' ); ?>
@@ -357,6 +401,14 @@ class PhotoJob_Orders_Dashboard {
                 </div>
             </form>
 
+            <?php if ( ! $is_worker ) : ?>
+            <div id="pjo-pack-bar" style="display:none;background:#fff;border:1px solid #c3c4c7;padding:8px 12px;margin:10px 0;border-radius:4px;">
+                <strong><?php _e( 'Zaznaczone:', 'photojob-organizer' ); ?> <span id="pjo-pack-count">0</span></strong>
+                <button type="button" class="button button-primary" id="pjo-pack-link">📦 <?php _e( 'Połącz w grupę pakowania', 'photojob-organizer' ); ?></button>
+                <span id="pjo-pack-result" style="margin-left:8px;font-size:12px;"></span>
+            </div>
+            <?php endif; ?>
+
             <?php $this->render_pagination( $f, $total_pages, $total ); ?>
 
             <table class="wp-list-table widefat striped pjo-orders-table">
@@ -380,7 +432,7 @@ class PhotoJob_Orders_Dashboard {
                     <tr><td colspan="11"><em><?php _e( 'Brak zamówień w wybranym zakresie.', 'photojob-organizer' ); ?></em></td></tr>
                 <?php else :
                     foreach ( $orders as $order ) :
-                        $this->render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses );
+                        $this->render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses, $clusters );
                     endforeach;
                 endif; ?>
                 </tbody>
@@ -429,6 +481,9 @@ class PhotoJob_Orders_Dashboard {
         .pjo-st-missing { color:#c92a2a; font-weight:bold; }
         .pjo-st-skip { color:#888; }
         .pjo-st-error { color:#c92a2a; font-weight:bold; }
+        .pjo-dup-badge { background:#f59f00; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; cursor:help; margin-left:4px; white-space:nowrap; }
+        .pjo-pack-badge { background:#2271b1; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; cursor:pointer; margin-left:4px; white-space:nowrap; }
+        .pjo-batch-badge { background:#5a3e8e; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; white-space:nowrap; }
         .pjo-line-item img.pjo-thumb { cursor:zoom-in; transition:transform .08s; }
         .pjo-line-item img.pjo-thumb:hover { transform:scale(1.05); border-color:#2271b1; }
         .pjo-lightbox { position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:100000; align-items:center; justify-content:center; cursor:zoom-out; }
@@ -550,17 +605,64 @@ class PhotoJob_Orders_Dashboard {
                 lb.style.display = 'flex';
             });
 
-            // ===== Folder Builder (Faza C) =====
             function esc(s) { return (s == null ? '' : String(s)).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
 
-            function renderPlan(box, plan) {
-                var orderId = box.getAttribute('data-order');
-                var html = '<h4>🗂 Plan druku — zamówienie #' + esc(plan.order_no) + '</h4>';
-                html += '<div class="pjo-build-meta">Sezon: <code>' + esc(plan.season || '—') + '</code> · Cel: <code>' + esc(plan.build_root) + '</code> · Źródło: <code>' + esc(plan.source_root) + '</code>';
-                if (plan.indexed != null) html += ' · Zindeksowano plików: <strong>' + plan.indexed + '</strong>';
-                html += '</div>';
-                (plan.warnings || []).forEach(function(w){ html += '<div class="pjo-warn">⚠ ' + esc(w) + '</div>'; });
+            // ===== #3 Grupy pakowania (łączenie dubli) =====
+            var packBar = document.getElementById('pjo-pack-bar');
+            var packCount = document.getElementById('pjo-pack-count');
+            function selectedPackIds() {
+                return Array.prototype.slice.call(document.querySelectorAll('.pjo-pack-cb:checked')).map(function(c){ return c.value; });
+            }
+            function refreshPackBar() {
+                if (!packBar) return;
+                var ids = selectedPackIds();
+                packCount.textContent = ids.length;
+                packBar.style.display = ids.length >= 2 ? 'block' : 'none';
+            }
+            document.querySelectorAll('.pjo-pack-cb').forEach(function(cb){ cb.addEventListener('change', refreshPackBar); });
+            var packLinkBtn = document.getElementById('pjo-pack-link');
+            if (packLinkBtn) packLinkBtn.addEventListener('click', function() {
+                var ids = selectedPackIds();
+                if (ids.length < 2) return;
+                var res = document.getElementById('pjo-pack-result');
+                packLinkBtn.disabled = true; res.textContent = '⏳…';
+                var fd = new FormData();
+                fd.append('action', 'pjo_link_pack_group');
+                fd.append('nonce', nonce);
+                ids.forEach(function(id){ fd.append('order_ids[]', id); });
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j){
+                        packLinkBtn.disabled = false;
+                        if (!j.success) { res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                        res.innerHTML = '✅ ' + esc(j.data.group) + ' — odświeżam…';
+                        setTimeout(function(){ location.reload(); }, 600);
+                    })
+                    .catch(function(e){ packLinkBtn.disabled = false; res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
+            });
+            // Rozłączenie — klik w badge grupy
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('.pjo-pack-badge') : null;
+                if (!b) return;
+                var tr = b.closest('tr');
+                var cb = tr ? tr.querySelector('.pjo-pack-cb') : null;
+                var oid = cb ? cb.value : null;
+                if (!oid) return;
+                if (!confirm('Rozłączyć zamówienie #' + oid + ' z grupy pakowania ' + b.getAttribute('data-group') + '?')) return;
+                var fd = new FormData();
+                fd.append('action', 'pjo_unlink_pack_group');
+                fd.append('nonce', nonce);
+                fd.append('order_id', oid);
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j){ if (j.success) location.reload(); else alert('Błąd'); });
+            });
 
+            // ===== Folder Builder (Faza C) =====
+
+            function renderPlanTable(plan) {
+                var html = '';
+                if (plan._multi) html += '<div style="margin:10px 0 4px;font-weight:bold;">📦 Zamówienie #' + esc(plan.order_no) + ' — sezon <code>' + esc(plan.season || '—') + '</code></div>';
                 var okCount = 0, missCount = 0, skipCount = 0;
                 html += '<table class="pjo-build-table"><thead><tr><th>Plik (produkt)</th><th>Typ</th><th>Rozmiar</th><th>Il.</th><th>Status źródła</th><th>Nazwa docelowa</th></tr></thead><tbody>';
                 (plan.items || []).forEach(function(it) {
@@ -579,14 +681,41 @@ class PhotoJob_Orders_Dashboard {
                     html += '</tr>';
                 });
                 html += '</tbody></table>';
+                return { html: html, ok: okCount, miss: missCount, skip: skipCount };
+            }
+
+            function renderPlan(box, data) {
+                var orderId = box.getAttribute('data-order');
+                var plans = data.plans || [];
+                var first = plans[0] || {};
+                var multi = !!data.is_group && plans.length > 1;
+                var totalOk = 0, totalMiss = 0, totalSkip = 0, tableHtml = '';
+                var allWarn = [];
+
+                plans.forEach(function(p) {
+                    p._multi = multi;
+                    (p.warnings || []).forEach(function(w){ if (allWarn.indexOf(w) < 0) allWarn.push(w); });
+                    var r = renderPlanTable(p);
+                    tableHtml += r.html;
+                    totalOk += r.ok; totalMiss += r.miss; totalSkip += r.skip;
+                });
+
+                var html = '<h4>🗂 Plan druku' + (multi ? ' — grupa pakowania (' + plans.length + ' zamówień)' : ' — zamówienie #' + esc(first.order_no)) + '</h4>';
+                html += '<div class="pjo-build-meta">Cel: <code>' + esc(first.build_root) + '/{NUMER_WYDRUKU}</code> · Źródło: <code>' + esc(first.source_root) + '</code>';
+                if (first.indexed != null) html += ' · Zindeksowano plików: <strong>' + first.indexed + '</strong>';
+                html += '</div>';
+                if (multi) html += '<div class="pjo-warn">📦 Zamówienia połączone w grupę pakowania — „Wykonaj" zbuduje wszystkie pod JEDNYM numerem wydruku i spakuje do jednej koperty.</div>';
+                allWarn.forEach(function(w){ html += '<div class="pjo-warn">⚠ ' + esc(w) + '</div>'; });
+
+                html += tableHtml;
 
                 html += '<div class="pjo-build-actions">';
-                if (okCount > 0) {
-                    html += '<button class="button button-primary pjo-build-exec" data-order="' + orderId + '">▶ Wykonaj na QNAP (' + okCount + ' plik(ów))</button>';
+                if (totalOk > 0) {
+                    html += '<button class="button button-primary pjo-build-exec" data-order="' + orderId + '">▶ Wykonaj na QNAP (' + totalOk + ' plik(ów))</button>';
                 } else {
                     html += '<em>Brak plików gotowych do skopiowania (sprawdź dopasowanie nazw / magazyn źródłowy).</em>';
                 }
-                html += '<span style="font-size:12px;color:#555;">Gotowe: <strong class="pjo-st-ok">' + okCount + '</strong> · Brak źródła: <strong class="pjo-st-missing">' + missCount + '</strong> · Pominięte: <strong>' + skipCount + '</strong></span>';
+                html += '<span style="font-size:12px;color:#555;">Gotowe: <strong class="pjo-st-ok">' + totalOk + '</strong> · Brak źródła: <strong class="pjo-st-missing">' + totalMiss + '</strong> · Pominięte: <strong>' + totalSkip + '</strong></span>';
                 html += '<span class="pjo-build-exec-result" style="font-size:12px;"></span>';
                 html += '</div>';
                 box.innerHTML = html;
@@ -632,9 +761,9 @@ class PhotoJob_Orders_Dashboard {
                         b.disabled = false;
                         if (!j.success) { b.textContent = '▶ Wykonaj na QNAP'; if (resultSpan) resultSpan.innerHTML = ' <span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
                         var d = j.data;
-                        b.textContent = '✅ Gotowe (' + d.copied + ')';
+                        b.textContent = '✅ Wydruk ' + esc(d.batch_number);
                         var errs = (d.errors && d.errors.length) ? ' · <span class="pjo-st-error">błędy: ' + d.errors.length + '</span>' : '';
-                        if (resultSpan) resultSpan.innerHTML = ' Skopiowano <strong>' + d.copied + '</strong>, folderów: ' + d.created_dirs + errs + ' → <code>' + esc(d.base_path) + '</code>';
+                        if (resultSpan) resultSpan.innerHTML = ' Nr wydruku: <strong>' + esc(d.batch_number) + '</strong> · skopiowano <strong>' + d.copied + '</strong>, folderów: ' + d.created_dirs + errs + ' → <code>' + esc(d.base_path) + '</code>';
                     })
                     .catch(function(e){ b.disabled = false; b.textContent = '▶ Wykonaj na QNAP'; if (resultSpan) resultSpan.innerHTML = ' <span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
             });
@@ -643,11 +772,14 @@ class PhotoJob_Orders_Dashboard {
         <?php
     }
 
-    private function render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses ) {
+    private function render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses, $clusters = array() ) {
         global $wpdb;
         $meta_table = $wpdb->prefix . 'pjo_order_meta';
         $oid = $order->get_id();
         $meta = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$meta_table} WHERE order_id=%d", $oid ), ARRAY_A );
+        $pack_group = $meta['pack_group'] ?? '';
+        $print_batch = $meta['print_batch'] ?? '';
+        $dup = $clusters[ $oid ] ?? null;
 
         $status = 'wc-' . $order->get_status();
         $status_label = wc_get_order_status_name( $status );
@@ -669,7 +801,22 @@ class PhotoJob_Orders_Dashboard {
             <td><button class="pjo-expand-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Pokaż produkty zamówienia', 'photojob-organizer' ); ?>">+</button></td>
             <td><?php echo esc_html( $date ); ?></td>
             <td><a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank">#<?php echo esc_html( $oid ); ?></a></td>
-            <td><?php echo esc_html( $client ); ?></td>
+            <td>
+                <?php if ( ! $is_worker ) : ?>
+                    <input type="checkbox" class="pjo-pack-cb" value="<?php echo esc_attr( $oid ); ?>" style="margin-right:4px;" title="<?php esc_attr_e( 'Zaznacz do połączenia', 'photojob-organizer' ); ?>">
+                <?php endif; ?>
+                <?php echo esc_html( $client ); ?>
+                <?php if ( $dup ) : ?>
+                    <?php
+                    $sib = array_map( function( $s ) { return '#' . $s; }, (array) $dup['siblings'] );
+                    $reason_lbl = strpos( $dup['reason'], 'email' ) !== false ? __( 'ten sam e-mail', 'photojob-organizer' ) : __( 'to samo nazwisko', 'photojob-organizer' );
+                    ?>
+                    <span class="pjo-dup-badge" title="<?php echo esc_attr( $reason_lbl . ': ' . implode( ', ', $sib ) ); ?>">👥 <?php _e( 'dubel', 'photojob-organizer' ); ?></span>
+                <?php endif; ?>
+                <?php if ( $pack_group ) : ?>
+                    <span class="pjo-pack-badge" data-group="<?php echo esc_attr( $pack_group ); ?>" title="<?php echo esc_attr( __( 'Grupa pakowania — kliknij, by rozłączyć', 'photojob-organizer' ) ); ?>">📦 <?php echo esc_html( $pack_group ); ?> ✕</span>
+                <?php endif; ?>
+            </td>
             <?php if ( ! $is_worker ) : ?>
                 <td>
                     <a href="mailto:<?php echo esc_attr( $email ); ?>"><?php echo esc_html( $email ); ?></a>
@@ -720,6 +867,9 @@ class PhotoJob_Orders_Dashboard {
                 <?php endif; ?>
                 <?php if ( ! empty( $meta['qnap_folder_path'] ) ) : ?>
                     <span class="pjo-built-flag" title="<?php echo esc_attr( $meta['qnap_folder_path'] ); ?>">✅</span>
+                <?php endif; ?>
+                <?php if ( $print_batch ) : ?>
+                    <span class="pjo-batch-badge" title="<?php esc_attr_e( 'Numer wydruku (zamówione do druku)', 'photojob-organizer' ); ?>">🖨 <?php echo esc_html( $print_batch ); ?></span>
                 <?php endif; ?>
             </td>
         </tr>

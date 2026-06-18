@@ -11,7 +11,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class PhotoJob_Activator {
 
-    const DB_VERSION = '1.4.0';
+    const DB_VERSION = '1.5.0';
     const DB_VERSION_OPTION = 'pjo_db_version';
 
     public static function activate() {
@@ -58,6 +58,8 @@ class PhotoJob_Activator {
             bank_account VARCHAR(50) NULL,
             season VARCHAR(100) NULL,
             facility_id BIGINT(20) UNSIGNED NULL,
+            pack_group VARCHAR(64) NULL,
+            print_batch VARCHAR(64) NULL,
             wants_invoice TINYINT(1) NOT NULL DEFAULT 0,
             invoice_data TEXT NULL,
             customer_note_cached TEXT NULL,
@@ -67,9 +69,31 @@ class PhotoJob_Activator {
             KEY idx_production_status (production_status),
             KEY idx_season (season),
             KEY idx_facility (facility_id),
+            KEY idx_pack_group (pack_group),
+            KEY idx_print_batch (print_batch),
             KEY idx_wants_invoice (wants_invoice)
         ) {$charset_collate};";
         dbDelta( $sql_orders_meta );
+
+        // Wydruki (print batches) — Faza C #4. Numer 26ZiNMW1 globalnie unikalny.
+        $print_batches = $wpdb->prefix . 'pjo_print_batches';
+        $sql_print_batches = "CREATE TABLE {$print_batches} (
+            id BIGINT(20) UNSIGNED NOT NULL AUTO_INCREMENT,
+            number VARCHAR(64) NOT NULL,
+            client_initials VARCHAR(20) NULL,
+            season_letter VARCHAR(4) NULL,
+            year2 VARCHAR(2) NULL,
+            qnap_path TEXT NULL,
+            order_ids TEXT NULL,
+            file_count INT NOT NULL DEFAULT 0,
+            status VARCHAR(50) NOT NULL DEFAULT 'built',
+            created_by BIGINT(20) UNSIGNED NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY  (id),
+            UNIQUE KEY uniq_number (number),
+            KEY idx_status (status)
+        ) {$charset_collate};";
+        dbDelta( $sql_print_batches );
 
         // pjo_facilities USUNIĘTE w v1.3.0 — placówki są auto-wykrywane
         // z hierarchii product_cat przez PhotoJob_WC_Inspector::get_facilities().

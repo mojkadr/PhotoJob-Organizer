@@ -355,10 +355,17 @@ class PhotoJob_QNAP_Client {
      *
      * @return array  [ 'dsc_4821' => array('dir'=>'/MójKadr/Sesje/...', 'file'=>'DSC_4821.JPG'), ... ]
      */
+    /** @var array Memoizacja indeksu per root (jeden request = jeden skan magazynu) */
+    private $index_cache = array();
+
     public function index_source_files( $root ) {
+        if ( isset( $this->index_cache[ $root ] ) ) {
+            return $this->index_cache[ $root ];
+        }
         $map = array();
         $count = 0;
         $this->index_recurse( $root, $map, $count, 0 );
+        $this->index_cache[ $root ] = $map;
         return $map;
     }
 
