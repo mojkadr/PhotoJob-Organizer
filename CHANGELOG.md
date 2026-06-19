@@ -1,5 +1,29 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.1] — 2026-06-20 — Poprawki: diagnostyka magazynu, dubel obok siebie, re-grant
+
+### Fixed — #1 Magazyn źródłowy „0 plików" był cichy
+- `PhotoJob_QNAP_Client::get_list()` rozróżnia teraz **pusty folder** od **błędu API**
+  (ścieżka nie istnieje / brak dostępu) — błąd zwraca `false` + `last_error` zamiast
+  cichej pustej listy.
+- Folder Builder pokazuje **jasne ostrzeżenie** gdy magazyn zwróci 0 plików lub jest
+  niedostępny, z nazwą ścieżki i podpowiedzią („to ścieżka File Station, np.
+  `/SESJE/Zielony i Niebieski Motylek`"). Koniec mylącego „Plik nie znaleziony" przy
+  złej ścieżce magazynu.
+- Ustawienia → QNAP: pole „Ścieżka magazynu zdjęć" ma placeholder + opis tłumaczący,
+  że to ścieżka File Station od nazwy zasobu (`M:\SESJE\…` = `/SESJE/…`).
+
+### Added — #2 Szybki re-grant dostępu w dashboardzie
+- Przycisk **🔓** w kolumnie Akcje każdego zamówienia → „wymuś ponowne przyznanie
+  dostępu" bez wchodzenia w ekran zamówienia WC. Odpala **ten sam hook**
+  (`woocommerce_order_action_ada_force_reprocess`) co akcja Photo Access (alpha16) —
+  zero duplikacji logiki; gdy wtyczka nieaktywna, czytelny błąd.
+
+### Changed — #3 Duble i grupy pakowania obok siebie
+- Lista zamówień układa członków grupy pakowania / klastra dubli (mail/nazwisko) zaraz
+  pod „kotwicą" (pierwszym w kolejności daty) — ułatwia pakowanie. Działa w obrębie
+  bieżącej strony (jeśli bliźniak na innej stronie → zwiększ „/strona" lub zawęź filtr).
+
 ## [1.6.0] — 2026-06-18 — Grupy pakowania (#3) + Wydruki/numeracja (#4)
 
 ### Added — #3 Grupy pakowania (wykrywanie dubli)

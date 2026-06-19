@@ -163,8 +163,19 @@ class PhotoJob_Folder_Builder {
             $season = '';
             $warnings[] = __( 'Nie udało się wykryć sezonu z kategorii produktów — sprawdź hierarchię product_cat.', 'photojob-organizer' );
         }
-        if ( $index_error ) {
-            $warnings[] = sprintf( __( 'Indeksowanie magazynu źródłowego: %s', 'photojob-organizer' ), $index_error );
+        // Diagnostyka magazynu źródłowego — żeby "0 plików" nie było ciche.
+        if ( is_array( $source_index ) ) {
+            if ( $index_error ) {
+                $warnings[] = sprintf(
+                    __( '⚠ Magazyn źródłowy "%s" niedostępny: %s — popraw „Ścieżka magazynu zdjęć" w Ustawienia → QNAP (to ścieżka File Station, np. /SESJE/Zielony i Niebieski Motylek).', 'photojob-organizer' ),
+                    $source_root, $index_error
+                );
+            } elseif ( count( $source_index ) === 0 ) {
+                $warnings[] = sprintf(
+                    __( '⚠ Magazyn źródłowy "%s" zwrócił 0 plików — sprawdź czy to właściwa ścieżka File Station (np. /SESJE/Zielony i Niebieski Motylek) w Ustawienia → QNAP.', 'photojob-organizer' ),
+                    $source_root
+                );
+            }
         }
 
         return array(

@@ -582,8 +582,8 @@ class PhotoJob_Settings {
             <tr><th><label for="qnap_share_path"><?php _e( 'Ścieżka folderów klientów', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_share_path" name="qnap_share_path" value="<?php echo esc_attr( $q['share_path'] ); ?>"></td></tr>
             <tr><th><label for="qnap_source_path"><?php _e( 'Ścieżka magazynu zdjęć', 'photojob-organizer' ); ?></label></th>
-                <td><input type="text" class="regular-text" id="qnap_source_path" name="qnap_source_path" value="<?php echo esc_attr( $q['source_path'] ); ?>">
-                    <p class="description"><?php _e( 'Źródło — tu leżą oryginały sesji (Folder Builder szuka tu plików po nazwie produktu).', 'photojob-organizer' ); ?></p>
+                <td><input type="text" class="regular-text" id="qnap_source_path" name="qnap_source_path" value="<?php echo esc_attr( $q['source_path'] ); ?>" placeholder="/SESJE/Zielony i Niebieski Motylek">
+                    <p class="description"><?php _e( 'Źródło — tu leżą oryginały sesji (Folder Builder szuka tu plików po nazwie produktu, rekurencyjnie po podfolderach lat/sezonów). To <strong>ścieżka File Station</strong> zaczynająca się od nazwy zasobu współdzielonego — np. dysk <code>M:\SESJE\Zielony i Niebieski Motylek</code> = <code>/SESJE/Zielony i Niebieski Motylek</code>. Bez ustawienia leci domyślne <code>/MójKadr/Sesje</code>.', 'photojob-organizer' ); ?></p>
                 </td></tr>
             <tr><th><label for="qnap_print_build_path"><?php _e( 'Ścieżka budowania druku', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_print_build_path" name="qnap_print_build_path" value="<?php echo esc_attr( $q['print_build_path'] ); ?>" placeholder="/MójKadr/Druk">

@@ -197,14 +197,23 @@ class PhotoJob_QNAP_Client {
         if ( $json === false ) {
             return false;
         }
-        // datas (v5) lub data (v4)
-        $items = array();
+        // datas (v5) lub data (v4) → lista (także pusty folder = pusta tablica).
         if ( isset( $json['datas'] ) && is_array( $json['datas'] ) ) {
-            $items = $json['datas'];
-        } elseif ( isset( $json['data'] ) && is_array( $json['data'] ) ) {
-            $items = $json['data'];
+            return $json['datas'];
         }
-        return $items;
+        if ( isset( $json['data'] ) && is_array( $json['data'] ) ) {
+            return $json['data'];
+        }
+        // Brak listy danych. Jeśli odpowiedź NIE jest OK → realny błąd (ścieżka nie
+        // istnieje / brak dostępu) — sygnalizujemy false, a nie cichą pustą listę.
+        if ( ! $this->is_ok( $json ) ) {
+            $this->last_error = sprintf(
+                __( 'Nie można wylistować "%s" (QNAP: %s)', 'photojob-organizer' ),
+                $path, substr( wp_json_encode( $json ), 0, 200 )
+            );
+            return false;
+        }
+        return array();
     }
 
     /**

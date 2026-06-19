@@ -39,6 +39,39 @@ class PhotoJob_Orders_Dashboard {
         add_action( 'wp_ajax_pjo_build_execute', array( $this, 'ajax_build_execute' ) );
         add_action( 'wp_ajax_pjo_link_pack_group', array( $this, 'ajax_link_pack_group' ) );
         add_action( 'wp_ajax_pjo_unlink_pack_group', array( $this, 'ajax_unlink_pack_group' ) );
+        add_action( 'wp_ajax_pjo_regrant_access', array( $this, 'ajax_regrant_access' ) );
+    }
+
+    /** ============ RE-GRANT DOSTĘPU (Photo Access) ============ */
+
+    /**
+     * Szybkie "wymuś ponowne przyznanie dostępu" z poziomu dashboardu.
+     * Odpala TEN SAM hook co akcja w ekranie zamówienia WC (Access-to-photos, alpha16) —
+     * zero duplikacji logiki: jeśli wtyczka Photo Access aktywna, robi dokładnie to samo
+     * (kasuje guard idempotency + ADA_Access_Processor::process → ponowny link do klienta).
+     */
+    public function ajax_regrant_access() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $order_id = absint( $_POST['order_id'] ?? 0 );
+        if ( ! $order_id ) {
+            wp_send_json_error( array( 'message' => 'Bad request' ) );
+        }
+        $order = wc_get_order( $order_id );
+        if ( ! $order ) {
+            wp_send_json_error( array( 'message' => __( 'Nie znaleziono zamówienia.', 'photojob-organizer' ) ) );
+        }
+        if ( ! has_action( 'woocommerce_order_action_ada_force_reprocess' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Wtyczka Photo Access (re-grant) nie jest aktywna na tym WP.', 'photojob-organizer' ) ) );
+        }
+        @set_time_limit( 0 );
+        ignore_user_abort( true );
+        do_action( 'woocommerce_order_action_ada_force_reprocess', $order );
+        wp_send_json_success( array(
+            'message' => sprintf( __( 'Photo Access: ponowne przyznanie dostępu odpalone dla #%d.', 'photojob-organizer' ), $order_id ),
+        ) );
     }
 
     /** ============ GRUPY PAKOWANIA (#3) ============ */
@@ -350,6 +383,8 @@ class PhotoJob_Orders_Dashboard {
         $prod_statuses = self::production_statuses_all();
         // #3: klastry dubli (mail/nazwisko) — tylko dla zarządzających.
         $clusters = ( ! $is_worker && class_exists( 'PhotoJob_Duplicates' ) ) ? PhotoJob_Duplicates::get_clusters() : array();
+        // #3: ułóż duble i grupy pakowania obok siebie (ułatwia pakowanie).
+        $orders = $this->cluster_adjacent_orders( $orders, $clusters );
         ?>
         <div class="wrap pjo-dashboard">
             <h1><?php _e( 'Zamówienia', 'photojob-organizer' ); ?>
@@ -743,6 +778,30 @@ class PhotoJob_Orders_Dashboard {
                 });
             });
 
+            // Re-grant dostępu (Photo Access) — przycisk per zamówienie
+            document.querySelectorAll('.pjo-regrant-btn').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    var orderId = btn.getAttribute('data-order');
+                    if (!confirm('Przyznać ponownie dostęp do zdjęć dla zamówienia #' + orderId + '?\nKlient dostanie link ponownie (Photo Access).')) return;
+                    var orig = btn.textContent;
+                    btn.disabled = true; btn.textContent = '⏳';
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_regrant_access');
+                    fd.append('nonce', nonce);
+                    fd.append('order_id', orderId);
+                    fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j) {
+                            btn.disabled = false;
+                            if (!j.success) { btn.textContent = orig; alert('Błąd: ' + (j.data && j.data.message ? j.data.message : 'unknown')); return; }
+                            btn.textContent = '✅';
+                            btn.title = (j.data && j.data.message) ? j.data.message : 'OK';
+                            setTimeout(function(){ btn.textContent = orig; }, 2500);
+                        })
+                        .catch(function(e){ btn.disabled = false; btn.textContent = orig; alert(e.message); });
+                });
+            });
+
             // Execute (delegacja — przycisk renderowany dynamicznie)
             document.addEventListener('click', function(e) {
                 var b = e.target.closest ? e.target.closest('.pjo-build-exec') : null;
@@ -770,6 +829,77 @@ class PhotoJob_Orders_Dashboard {
         })();
         </script>
         <?php
+    }
+
+    /**
+     * #3: Przestaw zamówienia tak, by członkowie tej samej grupy pakowania / klastra
+     * dubli (mail/nazwisko) szli zaraz pod "kotwicą" (pierwszym z grupy w kolejności daty).
+     * Reszta zachowuje naturalną kolejność daty. Działa W OBRĘBIE bieżącej strony —
+     * jeśli bliźniak jest na innej stronie, zwiększ "/strona" albo zawęź filtr statusu.
+     *
+     * @param WC_Order[] $orders
+     * @param array      $clusters  mapa order_id => ['siblings'=>[...]]
+     * @return WC_Order[]
+     */
+    private function cluster_adjacent_orders( $orders, $clusters ) {
+        if ( count( $orders ) < 2 ) {
+            return $orders;
+        }
+        $ids = array();
+        foreach ( $orders as $o ) {
+            $ids[] = $o->get_id();
+        }
+        // pack_group dla zamówień z bieżącej strony — jednym zapytaniem.
+        global $wpdb;
+        $table = $wpdb->prefix . 'pjo_order_meta';
+        $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT order_id, pack_group FROM {$table} WHERE order_id IN ({$placeholders})", $ids
+        ), ARRAY_A );
+        $pack = array();
+        foreach ( (array) $rows as $r ) {
+            if ( ! empty( $r['pack_group'] ) ) {
+                $pack[ (int) $r['order_id'] ] = $r['pack_group'];
+            }
+        }
+
+        $emitted = array();
+        $result  = array();
+        foreach ( $orders as $o ) {
+            $id = $o->get_id();
+            if ( isset( $emitted[ $id ] ) ) {
+                continue;
+            }
+            $result[] = $o;
+            $emitted[ $id ] = true;
+
+            // Zbierz bliźniaków obecnych na stronie (dubel + grupa pakowania).
+            $sibs = array();
+            if ( ! empty( $clusters[ $id ]['siblings'] ) ) {
+                foreach ( $clusters[ $id ]['siblings'] as $s ) {
+                    $sibs[ (int) $s ] = true;
+                }
+            }
+            if ( ! empty( $pack[ $id ] ) ) {
+                foreach ( $pack as $pid => $g ) {
+                    if ( $g === $pack[ $id ] && $pid !== $id ) {
+                        $sibs[ $pid ] = true;
+                    }
+                }
+            }
+            if ( empty( $sibs ) ) {
+                continue;
+            }
+            // Dorzuć obecnych, niewyemitowanych — zachowując kolejność daty.
+            foreach ( $orders as $o2 ) {
+                $id2 = $o2->get_id();
+                if ( isset( $sibs[ $id2 ] ) && ! isset( $emitted[ $id2 ] ) ) {
+                    $result[] = $o2;
+                    $emitted[ $id2 ] = true;
+                }
+            }
+        }
+        return $result;
     }
 
     private function render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses, $clusters = array() ) {
@@ -864,6 +994,7 @@ class PhotoJob_Orders_Dashboard {
                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank" class="button button-small" title="<?php esc_attr_e( 'Edytuj w WooCommerce', 'photojob-organizer' ); ?>">↗</a>
                 <?php if ( ! $is_worker ) : ?>
                     <button class="button button-small pjo-build-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Zbuduj folder druku na QNAP', 'photojob-organizer' ); ?>">🗂</button>
+                    <button class="button button-small pjo-regrant-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Photo Access: wymuś ponowne przyznanie dostępu (ponowny link do klienta)', 'photojob-organizer' ); ?>">🔓</button>
                 <?php endif; ?>
                 <?php if ( ! empty( $meta['qnap_folder_path'] ) ) : ?>
                     <span class="pjo-built-flag" title="<?php echo esc_attr( $meta['qnap_folder_path'] ); ?>">✅</span>
