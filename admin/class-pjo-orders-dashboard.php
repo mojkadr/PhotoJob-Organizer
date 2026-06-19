@@ -40,6 +40,44 @@ class PhotoJob_Orders_Dashboard {
         add_action( 'wp_ajax_pjo_link_pack_group', array( $this, 'ajax_link_pack_group' ) );
         add_action( 'wp_ajax_pjo_unlink_pack_group', array( $this, 'ajax_unlink_pack_group' ) );
         add_action( 'wp_ajax_pjo_regrant_access', array( $this, 'ajax_regrant_access' ) );
+        add_action( 'wp_ajax_pjo_sync_access_stages', array( $this, 'ajax_sync_access_stages' ) );
+    }
+
+    /**
+     * Backfill: ustaw etap produkcji dla zamówień, które JUŻ mają przyznany dostęp
+     * (post-meta `_ada_access_granted = yes`), a etap jest pusty / pending.
+     * Jednorazowe domknięcie istniejących zamówień (automat działa od teraz na nowe granty).
+     */
+    public function ajax_sync_access_stages() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        if ( ! class_exists( 'PhotoJob_Access_Sync' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Moduł synchronizacji niedostępny.', 'photojob-organizer' ) ) );
+        }
+        @set_time_limit( 0 );
+        ignore_user_abort( true );
+
+        global $wpdb;
+        $ids = $wpdb->get_col( $wpdb->prepare(
+            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key=%s AND meta_value=%s",
+            PhotoJob_Access_Sync::GRANT_META, 'yes'
+        ) );
+        $ptable = $wpdb->prefix . 'pjo_order_meta';
+        $sync = PhotoJob_Access_Sync::get_instance();
+        $updated = 0;
+        foreach ( (array) $ids as $oid ) {
+            $oid = (int) $oid;
+            $before = $wpdb->get_var( $wpdb->prepare( "SELECT production_status FROM {$ptable} WHERE order_id=%d", $oid ) );
+            // Guard spójny z auto-grantem: nie cofamy zaawansowanych etapów.
+            if ( $before !== null && ! in_array( $before, array( '', 'pending' ), true ) ) {
+                continue;
+            }
+            $sync->auto_set_stage_on_grant( $oid );
+            $updated++;
+        }
+        wp_send_json_success( array( 'scanned' => count( (array) $ids ), 'updated' => $updated ) );
     }
 
     /** ============ RE-GRANT DOSTĘPU (Photo Access) ============ */
@@ -333,24 +371,11 @@ class PhotoJob_Orders_Dashboard {
 
     /**
      * #2: Czy zamówienie zawiera WYŁĄCZNIE wersje elektroniczne (brak odbitek do druku)?
-     * Heurystyka spójna z Folder Builderem: pozycja "do druku" ma meta z rozmiarem (\d+x\d+).
+     * Kanoniczna logika w PhotoJob_Access_Sync (zawsze ładowana) — tu delegujemy,
+     * żeby heurystyka nie rozjechała się w dwóch miejscach.
      */
     public static function order_is_electronic_only( $order ) {
-        $has_any = false;
-        foreach ( $order->get_items() as $item ) {
-            $has_any = true;
-            foreach ( $item->get_meta_data() as $meta ) {
-                if ( $meta->key === '' || substr( $meta->key, 0, 1 ) === '_' ) {
-                    continue;
-                }
-                $v = is_string( $meta->value ) ? $meta->value : maybe_serialize( $meta->value );
-                $v = wp_strip_all_tags( $v );
-                if ( preg_match( '/\d+\s*[x×]\s*\d+/u', $v ) ) {
-                    return false; // znaleziono rozmiar → jest druk
-                }
-            }
-        }
-        return $has_any; // ma pozycje, ale żadna nie ma rozmiaru → tylko elektroniczne
+        return PhotoJob_Access_Sync::is_electronic_only( $order );
     }
 
     /** ============ RENDER ============ */
@@ -437,6 +462,11 @@ class PhotoJob_Orders_Dashboard {
             </form>
 
             <?php if ( ! $is_worker ) : ?>
+            <div style="margin:8px 0;">
+                <button type="button" class="button" id="pjo-sync-stages">🔄 <?php _e( 'Zsynchronizuj etapy z Photo Access', 'photojob-organizer' ); ?></button>
+                <span id="pjo-sync-stages-result" style="margin-left:8px;font-size:12px;"></span>
+                <span class="description" style="font-size:11px;margin-left:6px;"><?php _e( 'Ustawia etap (📧 Link wysłany / ⚠ Niekompletne) dla zamówień, które już mają przyznany dostęp do zdjęć.', 'photojob-organizer' ); ?></span>
+            </div>
             <div id="pjo-pack-bar" style="display:none;background:#fff;border:1px solid #c3c4c7;padding:8px 12px;margin:10px 0;border-radius:4px;">
                 <strong><?php _e( 'Zaznaczone:', 'photojob-organizer' ); ?> <span id="pjo-pack-count">0</span></strong>
                 <button type="button" class="button button-primary" id="pjo-pack-link">📦 <?php _e( 'Połącz w grupę pakowania', 'photojob-organizer' ); ?></button>
@@ -776,6 +806,26 @@ class PhotoJob_Orders_Dashboard {
                         })
                         .catch(function(e){ box.innerHTML = '❌ ' + esc(e.message); });
                 });
+            });
+
+            // Backfill: synchronizacja etapów z Photo Access (jednorazowo dla istniejących)
+            var syncBtn = document.getElementById('pjo-sync-stages');
+            if (syncBtn) syncBtn.addEventListener('click', function() {
+                if (!confirm('Ustawić etap produkcji (Link wysłany / Niekompletne) dla wszystkich zamówień z już przyznanym dostępem?\nNie cofa ręcznie zaawansowanych etapów.')) return;
+                var res = document.getElementById('pjo-sync-stages-result');
+                syncBtn.disabled = true; res.textContent = '⏳ Synchronizuję…';
+                var fd = new FormData();
+                fd.append('action', 'pjo_sync_access_stages');
+                fd.append('nonce', nonce);
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j) {
+                        syncBtn.disabled = false;
+                        if (!j.success) { res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                        res.innerHTML = '✅ Zaktualizowano <strong>' + j.data.updated + '</strong> z ' + j.data.scanned + ' (z dostępem) — odświeżam…';
+                        setTimeout(function(){ location.reload(); }, 1000);
+                    })
+                    .catch(function(e){ syncBtn.disabled = false; res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
             });
 
             // Re-grant dostępu (Photo Access) — przycisk per zamówienie

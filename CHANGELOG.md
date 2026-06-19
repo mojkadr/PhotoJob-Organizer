@@ -1,5 +1,21 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.2] — 2026-06-20 — Auto-etap produkcji po grancie Photo Access
+
+### Added — automatyczny etap produkcji
+- **PhotoJob_Access_Sync** (zawsze ładowana) — nasłuchuje na post-meta
+  `_ada_access_granted = yes`, którą Photo Access zapisuje w KAŻDEJ ścieżce grantu
+  (procesor / legacy Drive / ręczne przypisanie / wymuszony reprocess). Bez edycji tamtej
+  wtyczki. Po przyznaniu dostępu ustawia etap produkcji:
+  - zamówienie **tylko elektroniczne** (brak odbitek) → **📧 Link wysłany**,
+  - zamówienie **z odbitkami do druku** (JPG + wydruk) → **⚠ Niekompletne** (druk dalej do zrobienia).
+  - Niedestrukcyjne: nie cofa ręcznie zaawansowanego etapu (działa tylko gdy etap pusty / „pending").
+  - Dodaje notatkę do zamówienia z ustawionym etapem.
+- **Backfill**: przycisk „🔄 Zsynchronizuj etapy z Photo Access" w dashboardzie — ustawia etap
+  dla zamówień, które JUŻ mają przyznany dostęp (automat działa od teraz na nowe granty).
+- Logika „tylko elektroniczne" scalona w jednym miejscu (`PhotoJob_Access_Sync::is_electronic_only`);
+  dashboard deleguje, żeby heurystyka się nie rozjechała.
+
 ## [1.6.1] — 2026-06-20 — Poprawki: diagnostyka magazynu, dubel obok siebie, re-grant
 
 ### Fixed — #1 Magazyn źródłowy „0 plików" był cichy
