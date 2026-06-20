@@ -18,6 +18,26 @@ if ( ! defined( 'ABSPATH' ) ) {
 class PhotoJob_Print_Batch {
 
     const SEQ_OPTION = 'pjo_print_batch_seq';
+    const START_OPTION = 'pjo_print_start_number';
+
+    /**
+     * Numer startowy numeracji (z ustawień, default 1).
+     */
+    public static function get_start_number() {
+        return max( 1, (int) get_option( self::START_OPTION, 1 ) );
+    }
+
+    public static function set_start_number( $n ) {
+        update_option( self::START_OPTION, max( 1, (int) $n ) );
+    }
+
+    /**
+     * Reset licznika tak, by NASTĘPNY numer = numer startowy.
+     * (Licznik trzyma „ostatni użyty"; ustawiamy start-1.)
+     */
+    public static function reset_counter() {
+        update_option( self::SEQ_OPTION, self::get_start_number() - 1 );
+    }
 
     /**
      * Zbuduj numer wydruku z danych klienta/sezonu, rezerwując kolejny globalny licznik.
@@ -79,16 +99,19 @@ class PhotoJob_Print_Batch {
     private static function next_seq() {
         global $wpdb;
         // Atomowy upsert na wp_options, żeby równoległe buildy nie nadały tego samego numeru.
+        // Floor = numer startowy: pierwszy build (INSERT) = start; kolejne = max(prev+1, start),
+        // więc podniesienie startu w ustawieniach przeskakuje numerację w górę.
         $name = self::SEQ_OPTION;
+        $start = self::get_start_number();
         $wpdb->query( $wpdb->prepare(
             "INSERT INTO {$wpdb->options} (option_name, option_value, autoload)
-             VALUES (%s, '1', 'no')
-             ON DUPLICATE KEY UPDATE option_value = option_value + 1",
-            $name
+             VALUES (%s, %d, 'no')
+             ON DUPLICATE KEY UPDATE option_value = GREATEST( CAST(option_value AS UNSIGNED) + 1, %d )",
+            $name, $start, $start
         ) );
         wp_cache_delete( $name, 'options' );
-        $val = (int) get_option( $name, 1 );
-        return max( 1, $val );
+        $val = (int) get_option( $name, $start );
+        return max( $start, $val );
     }
 
     /**

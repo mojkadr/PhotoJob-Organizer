@@ -3,7 +3,7 @@
  * Plugin Name: PhotoJob Organizer
  * Plugin URI: https://github.com/mojkadr/PhotoJob-Organizer
  * Description: Narzędzie do organizacji zamówień fotograficznych i generowania raportów księgowych
- * Version: 1.6.6
+ * Version: 1.6.7
  * Author: MójKadr
  * Author URI: https://mojkadr.eu
  * License: GPL v2 or later
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Definicje stałych
-define( 'PHOTOJOB_VERSION', '1.6.6' );
+define( 'PHOTOJOB_VERSION', '1.6.7' );
 define( 'PHOTOJOB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );

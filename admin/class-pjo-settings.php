@@ -40,6 +40,7 @@ class PhotoJob_Settings {
         add_action( 'wp_ajax_pjo_test_qnap', array( $this, 'ajax_test_qnap' ) );
         add_action( 'wp_ajax_pjo_browse_qnap', array( $this, 'ajax_browse_qnap' ) );
         add_action( 'wp_ajax_pjo_set_source_path', array( $this, 'ajax_set_source_path' ) );
+        add_action( 'wp_ajax_pjo_reset_print_counter', array( $this, 'ajax_reset_print_counter' ) );
     }
 
     public function handle_save() {
@@ -113,6 +114,11 @@ class PhotoJob_Settings {
             $data['password_encrypted'] = $current['password_encrypted'];
         }
         update_option( 'pjo_settings_qnap', $data );
+
+        // Numer startowy wydruku (osobna opcja; sam zapis podbija licznik tylko w górę).
+        if ( isset( $_POST['qnap_print_start_number'] ) && class_exists( 'PhotoJob_Print_Batch' ) ) {
+            PhotoJob_Print_Batch::set_start_number( absint( $_POST['qnap_print_start_number'] ) );
+        }
     }
 
     private function save_labels() {
@@ -377,6 +383,27 @@ class PhotoJob_Settings {
         $q['source_path'] = $path;
         update_option( 'pjo_settings_qnap', $q );
         wp_send_json_success( array( 'path' => $path ) );
+    }
+
+    /**
+     * Reset numeracji wydruków do numeru startowego + czyszczenie historii (testy).
+     */
+    public function ajax_reset_print_counter() {
+        if ( ! current_user_can( 'pjo_manage_settings' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_qnap_test', 'nonce' );
+        if ( ! class_exists( 'PhotoJob_Print_Batch' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Moduł wydruków niedostępny.', 'photojob-organizer' ) ) );
+        }
+        if ( isset( $_POST['start'] ) ) {
+            PhotoJob_Print_Batch::set_start_number( absint( $_POST['start'] ) );
+        }
+        PhotoJob_Print_Batch::reset_counter();
+        global $wpdb;
+        $wpdb->query( "DELETE FROM {$wpdb->prefix}pjo_print_batches" );
+        $wpdb->query( "UPDATE {$wpdb->prefix}pjo_order_meta SET print_batch = NULL" );
+        wp_send_json_success( array( 'start' => PhotoJob_Print_Batch::get_start_number() ) );
     }
 
     /** ============ PASSWORD ENCRYPTION ============ */
@@ -677,7 +704,14 @@ class PhotoJob_Settings {
                 </td></tr>
             <tr><th><label for="qnap_print_build_path"><?php _e( 'Ścieżka budowania druku', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_print_build_path" name="qnap_print_build_path" value="<?php echo esc_attr( $q['print_build_path'] ); ?>" placeholder="/MójKadr/Druk">
-                    <p class="description"><?php _e( 'Cel — Folder Builder tworzy tu strukturę <code>{Sezon}/{NrZam}/{Typ}/{Rozmiar}/…</code> i kopiuje przemianowane pliki do druku.', 'photojob-organizer' ); ?></p>
+                    <p class="description"><?php _e( 'Cel — Folder Builder tworzy tu strukturę <code>{NUMER}/{Typ}/{Rozmiar}/…</code> i kopiuje przemianowane pliki do druku.', 'photojob-organizer' ); ?></p>
+                </td></tr>
+            <tr><th><label for="qnap_print_start_number"><?php _e( 'Numer startowy wydruku', 'photojob-organizer' ); ?></label></th>
+                <td>
+                    <input type="number" min="1" id="qnap_print_start_number" name="qnap_print_start_number" value="<?php echo esc_attr( PhotoJob_Print_Batch::get_start_number() ); ?>" style="width:100px;">
+                    <button type="button" class="button" id="pjo-reset-counter">♻ <?php _e( 'Resetuj numerację', 'photojob-organizer' ); ?></button>
+                    <span id="pjo-reset-counter-result" style="margin-left:8px;"></span>
+                    <p class="description"><?php printf( __( 'Od jakiego numeru startuje końcówka numeru wydruku (np. %1$s → pierwszy wydruk „26ZiNMW%1$s"). Sam zapis numeru startowego podbija licznik tylko w górę. <strong>Reset</strong> zeruje licznik do numeru startowego i CZYŚCI historię wydruków (rekordy + stemple 🖨 na zamówieniach) — do użytku na testach.', 'photojob-organizer' ), esc_html( (string) PhotoJob_Print_Batch::get_start_number() ) ); ?></p>
                 </td></tr>
             <tr><th><label for="qnap_password_const"><?php _e( 'Stała PHP z hasłem (opcjonalnie)', 'photojob-organizer' ); ?></label></th>
                 <td>
@@ -734,6 +768,32 @@ class PhotoJob_Settings {
                 })
                 .catch(function(e) { out.innerHTML = '<span style="color:red;">❌ ' + e.message + '</span>'; });
         });
+
+        // Reset numeracji wydruków
+        (function(){
+            var rb = document.getElementById('pjo-reset-counter');
+            if (!rb) return;
+            var nonce = '<?php echo esc_js( wp_create_nonce( 'pjo_qnap_test' ) ); ?>';
+            var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+            rb.addEventListener('click', function(){
+                if (!confirm('Zresetować numerację wydruków do numeru startowego i WYCZYŚCIĆ historię (rekordy wydruków + stemple na zamówieniach)?\nNieodwracalne — do użytku na testach.')) return;
+                var out = document.getElementById('pjo-reset-counter-result');
+                var start = document.getElementById('qnap_print_start_number').value || '1';
+                rb.disabled = true; out.textContent = '⏳…';
+                var fd = new FormData();
+                fd.append('action', 'pjo_reset_print_counter');
+                fd.append('nonce', nonce);
+                fd.append('start', start);
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j){
+                        rb.disabled = false;
+                        if (!j.success) { out.innerHTML = '<span style="color:red;">❌ ' + (j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                        out.innerHTML = '<span style="color:green;">✅ Zresetowano. Następny numer wydruku = ' + j.data.start + '</span>';
+                    })
+                    .catch(function(e){ rb.disabled = false; out.innerHTML = '<span style="color:red;">❌ ' + e.message + '</span>'; });
+            });
+        })();
 
         // Przeglądarka ścieżki magazynu — znajdź właściwą ścieżkę File Station bez zgadywania.
         (function(){

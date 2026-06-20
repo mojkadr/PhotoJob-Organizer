@@ -275,7 +275,6 @@ class PhotoJob_Folder_Builder {
         $errors = array();
         $made_dirs = array();
         $build_root = '';
-        $total_files = 0;
 
         foreach ( $member_ids as $mid ) {
             $plan = self::build_plan( $mid, $qnap, $batch_number );
@@ -285,40 +284,7 @@ class PhotoJob_Folder_Builder {
                 continue;
             }
             $build_root = $plan['build_root'];
-
-            foreach ( $plan['items'] as $row ) {
-                if ( ! empty( $row['skip'] ) ) {
-                    $results[] = array( 'name' => $row['source_name'], 'status' => 'skip', 'msg' => $row['reason'], 'order' => $plan['order_no'] );
-                    continue;
-                }
-                if ( $row['source_found'] !== true ) {
-                    $results[] = array( 'name' => $row['source_name'], 'status' => 'missing', 'msg' => $row['reason'], 'order' => $plan['order_no'] );
-                    $errors[] = $row['source_name'];
-                    continue;
-                }
-                $dest_dir = $row['target_dir_full'];
-                if ( ! isset( $made_dirs[ $dest_dir ] ) ) {
-                    if ( ! $qnap->make_path( $dest_dir ) ) {
-                        $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Folder: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
-                        $errors[] = $row['source_name'];
-                        continue;
-                    }
-                    $made_dirs[ $dest_dir ] = true;
-                }
-                if ( ! $qnap->copy_file( $row['source_dir'], $row['source_file'], $dest_dir, true ) ) {
-                    $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Kopia: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
-                    $errors[] = $row['source_name'];
-                    continue;
-                }
-                if ( ! $qnap->rename_file( $dest_dir, $row['source_file'], $row['target_filename'] ) ) {
-                    $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Rename: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
-                    $errors[] = $row['source_name'];
-                    continue;
-                }
-                $copied++;
-                $total_files++;
-                $results[] = array( 'name' => $row['source_name'], 'status' => 'ok', 'msg' => $row['target_full'], 'order' => $plan['order_no'] );
-            }
+            $copied += self::process_plan_items( $qnap, $plan, $made_dirs, $results, $errors );
 
             // Zapisz ścieżkę (folder paczki wydruku) + stempel numeru przy każdym zamówieniu.
             self::save_order_folder_path( $mid, $build_root );
@@ -334,7 +300,7 @@ class PhotoJob_Folder_Builder {
                 'year2'           => $num['year2'],
                 'qnap_path'       => $build_root,
                 'order_ids'       => $member_ids,
-                'file_count'      => $total_files,
+                'file_count'      => $copied,
                 'status'          => empty( $errors ) ? 'built' : 'partial',
             ) );
         }
@@ -347,6 +313,142 @@ class PhotoJob_Folder_Builder {
             'base_path'    => $build_root,
             'orders'       => $member_ids,
             'results'      => $results,
+        );
+    }
+
+    /**
+     * GRUPOWE budowanie: WSZYSTKIE zaznaczone zamówienia trafiają pod JEDEN numer wydruku
+     * (jeden folder akcji), pogrupowane po {Typ}/{Rozmiar}. Wchodząc w folder formatu
+     * (np. 15x23) masz wszystkie zdjęcia do druku z wielu zamówień razem.
+     *
+     * @param int[] $order_ids
+     * @return array {batch_number, copied, created_dirs, errors, base_path, orders, results}
+     */
+    public static function execute_bulk( array $order_ids, PhotoJob_QNAP_Client $qnap ) {
+        $order_ids = array_values( array_unique( array_filter( array_map( 'absint', $order_ids ) ) ) );
+        if ( empty( $order_ids ) ) {
+            return array( 'error' => __( 'Brak zamówień.', 'photojob-organizer' ) );
+        }
+
+        // JEDEN numer dla całej akcji — kontekst zagregowany z całego zaznaczenia.
+        $ctx = self::aggregate_context( $order_ids );
+        $num = PhotoJob_Print_Batch::generate_number( $ctx['client'], $ctx['season'], $ctx['year'] );
+        $batch_number = $num['number'];
+
+        $results = array();
+        $copied = 0;
+        $errors = array();
+        $made_dirs = array();
+        $build_root = '';
+        $built_orders = array();
+
+        foreach ( $order_ids as $oid ) {
+            $plan = self::build_plan( $oid, $qnap, $batch_number );
+            if ( is_wp_error( $plan ) ) {
+                $results[] = array( 'name' => '#' . $oid, 'status' => 'error', 'msg' => $plan->get_error_message() );
+                $errors[] = '#' . $oid;
+                continue;
+            }
+            $build_root = $plan['build_root'];
+            $copied += self::process_plan_items( $qnap, $plan, $made_dirs, $results, $errors );
+
+            self::save_order_folder_path( $oid, $build_root );
+            self::stamp_print_batch( $oid, $batch_number );
+            $built_orders[] = $oid;
+        }
+
+        if ( $copied > 0 || ! empty( $built_orders ) ) {
+            PhotoJob_Print_Batch::save( array(
+                'number'          => $batch_number,
+                'client_initials' => $num['client_initials'],
+                'season_letter'   => $num['season_letter'],
+                'year2'           => $num['year2'],
+                'qnap_path'       => $build_root,
+                'order_ids'       => $built_orders,
+                'file_count'      => $copied,
+                'status'          => empty( $errors ) ? 'built' : 'partial',
+            ) );
+        }
+
+        return array(
+            'batch_number' => $batch_number,
+            'copied'       => $copied,
+            'created_dirs' => count( $made_dirs ),
+            'errors'       => $errors,
+            'base_path'    => $build_root,
+            'orders'       => $built_orders,
+            'results'      => $results,
+        );
+    }
+
+    /**
+     * Skopiuj+przemianuj pozycje jednego planu na QNAP. Mutuje $made_dirs/$results/$errors.
+     *
+     * @return int liczba skopiowanych plików
+     */
+    private static function process_plan_items( PhotoJob_QNAP_Client $qnap, $plan, &$made_dirs, &$results, &$errors ) {
+        $copied = 0;
+        foreach ( $plan['items'] as $row ) {
+            if ( ! empty( $row['skip'] ) ) {
+                $results[] = array( 'name' => $row['source_name'], 'status' => 'skip', 'msg' => $row['reason'], 'order' => $plan['order_no'] );
+                continue;
+            }
+            if ( $row['source_found'] !== true ) {
+                $results[] = array( 'name' => $row['source_name'], 'status' => 'missing', 'msg' => $row['reason'], 'order' => $plan['order_no'] );
+                $errors[] = $row['source_name'];
+                continue;
+            }
+            $dest_dir = $row['target_dir_full'];
+            if ( ! isset( $made_dirs[ $dest_dir ] ) ) {
+                if ( ! $qnap->make_path( $dest_dir ) ) {
+                    $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Folder: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
+                    $errors[] = $row['source_name'];
+                    continue;
+                }
+                $made_dirs[ $dest_dir ] = true;
+            }
+            if ( ! $qnap->copy_file( $row['source_dir'], $row['source_file'], $dest_dir, true ) ) {
+                $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Kopia: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
+                $errors[] = $row['source_name'];
+                continue;
+            }
+            if ( ! $qnap->rename_file( $dest_dir, $row['source_file'], $row['target_filename'] ) ) {
+                $results[] = array( 'name' => $row['source_name'], 'status' => 'error', 'msg' => __( 'Rename: ', 'photojob-organizer' ) . $qnap->last_error, 'order' => $plan['order_no'] );
+                $errors[] = $row['source_name'];
+                continue;
+            }
+            $copied++;
+            $results[] = array( 'name' => $row['source_name'], 'status' => 'ok', 'msg' => $row['target_full'], 'order' => $plan['order_no'] );
+        }
+        return $copied;
+    }
+
+    /**
+     * Zagreguj kontekst (dominujący klient/sezon/rok) z wielu zamówień — do numeru bulk.
+     */
+    private static function aggregate_context( array $order_ids ) {
+        $client = array();
+        $season = array();
+        $year = array();
+        foreach ( $order_ids as $oid ) {
+            $c = self::resolve_order_context( $oid );
+            if ( $c['client'] !== '' ) {
+                $client[ $c['client'] ] = ( $client[ $c['client'] ] ?? 0 ) + 1;
+            }
+            if ( $c['season'] !== '' ) {
+                $season[ $c['season'] ] = ( $season[ $c['season'] ] ?? 0 ) + 1;
+            }
+            if ( $c['year'] !== '' ) {
+                $year[ $c['year'] ] = ( $year[ $c['year'] ] ?? 0 ) + 1;
+            }
+        }
+        arsort( $client );
+        arsort( $season );
+        arsort( $year );
+        return array(
+            'client' => (string) key( $client ),
+            'season' => (string) key( $season ),
+            'year'   => (string) key( $year ),
         );
     }
 

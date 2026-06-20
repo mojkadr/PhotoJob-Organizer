@@ -1,5 +1,20 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.7] — 2026-06-20 — Bulk = jeden folder akcji + select-all + numeracja od N
+
+### Changed — grupowe budowanie = JEDEN folder akcji (poprawiony zamysł)
+- **🗂 Zbuduj foldery druku** kładzie WSZYSTKIE zaznaczone zamówienia pod **JEDNYM numerem
+  wydruku** (jeden folder akcji), pogrupowane po `{Typ}/{Rozmiar}`. Wchodząc w folder formatu
+  (np. `15x23`) masz wszystkie zdjęcia do druku z wielu zamówień razem — gotowe do labu.
+  Wcześniej (1.6.6) bulk tworzył osobny numer per zamówienie — błędny zamysł.
+
+### Added
+- **Zaznacz wszystkie** — checkbox w nagłówku kolumny „Klient" zaznacza/odznacza wszystkie
+  zamówienia na stronie (po filtrze) jednym kliknięciem.
+- **Numer startowy wydruku** w Ustawienia → QNAP — od jakiej liczby startuje końcówka numeru.
+  Sam zapis podbija licznik tylko w górę (nigdy nie cofa). **♻ Resetuj numerację** zeruje
+  licznik do numeru startowego i czyści historię (rekordy + stemple 🖨 na zamówieniach) — do testów.
+
 ## [1.6.6] — 2026-06-20 — Grupowe budowanie folderów + cache indeksu w pliku
 
 ### Added — grupowe budowanie folderów druku

@@ -217,9 +217,8 @@ class PhotoJob_Orders_Dashboard {
     }
 
     /**
-     * Grupowe budowanie folderów druku dla zaznaczonych zamówień.
-     * JEDNO logowanie + JEDEN skan magazynu (cache) na całą paczkę → szybciej niż
-     * budowanie każdego zlecenia osobno. Każde zamówienie/grupa dostaje swój numer wydruku.
+     * Grupowe budowanie folderu druku: WSZYSTKIE zaznaczone zamówienia pod JEDNYM numerem
+     * (jeden folder akcji), pogrupowane po formacie odbitki. Jedno logowanie + jeden skan.
      */
     public function ajax_build_bulk() {
         if ( ! current_user_can( 'pjo_manage_orders' ) ) {
@@ -241,40 +240,21 @@ class PhotoJob_Orders_Dashboard {
         if ( ! $qnap->login() ) {
             wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP: ', 'photojob-organizer' ) . $qnap->last_error ) );
         }
-        // Pre-skan raz (cache) — execute_plan każdego zlecenia użyje gotowego indeksu.
+        // Pre-skan raz (cache) — build_plan każdego zlecenia użyje gotowego indeksu.
         $qnap->index_source_files( PhotoJob_Folder_Builder::source_root() );
 
-        $processed = array();
-        $batches = array();
-        $copied = 0;
-        $errors = 0;
-        $orders_done = 0;
-        foreach ( $ids as $oid ) {
-            if ( isset( $processed[ $oid ] ) ) {
-                continue; // już zbudowane jako część grupy pakowania innego zamówienia
-            }
-            $res = PhotoJob_Folder_Builder::execute_plan( $oid, $qnap );
-            $members = (array) ( $res['orders'] ?? array() );
-            foreach ( $members as $m ) {
-                $processed[ $m ] = true;
-            }
-            $orders_done += count( $members );
-            $copied += (int) ( $res['copied'] ?? 0 );
-            $errors += count( (array) ( $res['errors'] ?? array() ) );
-            $batches[] = array(
-                'number' => $res['batch_number'] ?? '',
-                'copied' => (int) ( $res['copied'] ?? 0 ),
-                'orders' => $members,
-                'path'   => $res['base_path'] ?? '',
-            );
-        }
+        $res = PhotoJob_Folder_Builder::execute_bulk( $ids, $qnap );
         $qnap->logout();
+        if ( isset( $res['error'] ) ) {
+            wp_send_json_error( array( 'message' => $res['error'] ) );
+        }
         wp_send_json_success( array(
-            'count'   => count( $batches ),
-            'orders'  => $orders_done,
-            'copied'  => $copied,
-            'errors'  => $errors,
-            'batches' => $batches,
+            'batch_number' => $res['batch_number'],
+            'orders'       => count( (array) $res['orders'] ),
+            'copied'       => (int) $res['copied'],
+            'errors'       => count( (array) $res['errors'] ),
+            'created_dirs' => (int) $res['created_dirs'],
+            'base_path'    => $res['base_path'],
         ) );
     }
 
@@ -545,7 +525,10 @@ class PhotoJob_Orders_Dashboard {
                     <th style="width:30px;"></th>
                     <th style="width:90px;"><?php _e( 'Data', 'photojob-organizer' ); ?></th>
                     <th style="width:80px;"><?php _e( 'Nr', 'photojob-organizer' ); ?></th>
-                    <th><?php _e( 'Klient', 'photojob-organizer' ); ?></th>
+                    <th>
+                        <?php if ( ! $is_worker ) : ?><input type="checkbox" id="pjo-select-all" title="<?php esc_attr_e( 'Zaznacz/odznacz wszystkie na stronie', 'photojob-organizer' ); ?>" style="margin-right:4px;vertical-align:middle;"><?php endif; ?>
+                        <?php _e( 'Klient', 'photojob-organizer' ); ?>
+                    </th>
                     <?php if ( ! $is_worker ) : ?>
                         <th><?php _e( 'Email / Tel', 'photojob-organizer' ); ?></th>
                         <th style="width:90px;"><?php _e( 'Kwota', 'photojob-organizer' ); ?></th>
@@ -753,13 +736,20 @@ class PhotoJob_Orders_Dashboard {
             }
             document.querySelectorAll('.pjo-pack-cb').forEach(function(cb){ cb.addEventListener('change', refreshPackBar); });
 
+            // Zaznacz/odznacz wszystkie na stronie (checkbox w nagłówku)
+            var selectAll = document.getElementById('pjo-select-all');
+            if (selectAll) selectAll.addEventListener('change', function(){
+                document.querySelectorAll('.pjo-pack-cb').forEach(function(cb){ cb.checked = selectAll.checked; });
+                refreshPackBar();
+            });
+
             // Grupowe budowanie folderów druku (jedno logowanie + jeden skan na całą paczkę)
             if (packBuildBtn) packBuildBtn.addEventListener('click', function() {
                 var ids = selectedPackIds();
                 if (ids.length < 1) return;
-                if (!confirm('Zbudować foldery druku na QNAP dla ' + ids.length + ' zaznaczonych zamówień?\nKażde zamówienie/grupa dostanie swój numer wydruku.')) return;
+                if (!confirm('Zbudować JEDEN folder druku na QNAP dla ' + ids.length + ' zaznaczonych zamówień?\nWszystkie trafią pod jeden numer wydruku, pogrupowane po formacie odbitki.')) return;
                 var res = document.getElementById('pjo-pack-result');
-                packBuildBtn.disabled = true; res.textContent = '⏳ Buduję na QNAP (jeden skan magazynu na całość)…';
+                packBuildBtn.disabled = true; res.textContent = '⏳ Buduję jeden folder akcji (jeden skan magazynu na całość)…';
                 var fd = new FormData();
                 fd.append('action', 'pjo_build_bulk');
                 fd.append('nonce', nonce);
@@ -771,9 +761,8 @@ class PhotoJob_Orders_Dashboard {
                         if (!j.success) { res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
                         var d = j.data;
                         var errs = d.errors ? ' · <span class="pjo-st-error">błędy: ' + d.errors + '</span>' : '';
-                        var nums = (d.batches || []).map(function(b){ return b.number; }).filter(Boolean).join(', ');
-                        res.innerHTML = '✅ Zbudowano <strong>' + d.count + '</strong> wydruk(ów) (' + d.orders + ' zam.), skopiowano <strong>' + d.copied + '</strong>' + errs + (nums ? ' · nr: ' + esc(nums) : '') + ' — odświeżam…';
-                        setTimeout(function(){ location.reload(); }, 1400);
+                        res.innerHTML = '✅ Wydruk <strong>' + esc(d.batch_number) + '</strong> — ' + d.orders + ' zam., skopiowano <strong>' + d.copied + '</strong> do <code>' + esc(d.base_path) + '</code>' + errs + ' — odświeżam…';
+                        setTimeout(function(){ location.reload(); }, 1600);
                     })
                     .catch(function(e){ packBuildBtn.disabled = false; res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
             });
