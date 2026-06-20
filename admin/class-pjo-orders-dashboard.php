@@ -159,6 +159,11 @@ class PhotoJob_Orders_Dashboard {
             wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP nieudane: ', 'photojob-organizer' ) . $qnap->last_error ) );
         }
 
+        // Wymuś świeży skan magazynu (np. po dodaniu nowych sesji) — czyści transient.
+        if ( ! empty( $_POST['refresh'] ) ) {
+            $qnap->clear_source_index( PhotoJob_Folder_Builder::source_root() );
+        }
+
         // #3: jeśli zamówienie w grupie pakowania → podgląd całej grupy (jeden numer przy Wykonaj).
         $member_ids = PhotoJob_Folder_Builder::pack_group_members( $order_id );
         $plans = array();
@@ -762,7 +767,8 @@ class PhotoJob_Orders_Dashboard {
 
                 var html = '<h4>🗂 Plan druku' + (multi ? ' — grupa pakowania (' + plans.length + ' zamówień)' : ' — zamówienie #' + esc(first.order_no)) + '</h4>';
                 html += '<div class="pjo-build-meta">Cel: <code>' + esc(first.build_root) + '/{NUMER_WYDRUKU}</code> · Źródło: <code>' + esc(first.source_root) + '</code>';
-                if (first.indexed != null) html += ' · Zindeksowano plików: <strong>' + first.indexed + '</strong>';
+                if (first.indexed != null) html += ' · Zindeksowano plików: <strong>' + first.indexed + '</strong> <span style="color:#888;">(cache 15 min)</span>';
+                html += ' <button class="button button-small pjo-build-refresh" data-order="' + orderId + '" title="Przeskanuj magazyn od nowa (po dodaniu nowych sesji)">🔄 Odśwież indeks</button>';
                 html += '</div>';
                 if (multi) html += '<div class="pjo-warn">📦 Zamówienia połączone w grupę pakowania — „Wykonaj" zbuduje wszystkie pod JEDNYM numerem wydruku i spakuje do jednej koperty.</div>';
                 allWarn.forEach(function(w){ html += '<div class="pjo-warn">⚠ ' + esc(w) + '</div>'; });
@@ -781,6 +787,24 @@ class PhotoJob_Orders_Dashboard {
                 box.innerHTML = html;
             }
 
+            function loadBuildPreview(orderId, box, refresh) {
+                box.innerHTML = refresh
+                    ? '⏳ Skanuję magazyn od nowa…'
+                    : '⏳ Łączę z QNAP, indeksuję magazyn i buduję plan… (pierwszy raz może chwilę potrwać, potem z cache)';
+                var fd = new FormData();
+                fd.append('action', 'pjo_build_preview');
+                fd.append('nonce', nonce);
+                fd.append('order_id', orderId);
+                if (refresh) fd.append('refresh', '1');
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j) {
+                        if (!j.success) { box.innerHTML = '<div class="pjo-warn">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</div>'; return; }
+                        renderPlan(box, j.data);
+                    })
+                    .catch(function(e){ box.innerHTML = '❌ ' + esc(e.message); });
+            }
+
             document.querySelectorAll('.pjo-build-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() {
                     var orderId = btn.getAttribute('data-order');
@@ -788,19 +812,18 @@ class PhotoJob_Orders_Dashboard {
                     var box = row.querySelector('.pjo-build-content');
                     if (row.style.display === 'table-row') { row.style.display = 'none'; return; }
                     row.style.display = 'table-row';
-                    box.innerHTML = '⏳ Łączę z QNAP, indeksuję magazyn i buduję plan… (może chwilę potrwać)';
-                    var fd = new FormData();
-                    fd.append('action', 'pjo_build_preview');
-                    fd.append('nonce', nonce);
-                    fd.append('order_id', orderId);
-                    fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
-                        .then(function(r){ return r.json(); })
-                        .then(function(j) {
-                            if (!j.success) { box.innerHTML = '<div class="pjo-warn">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</div>'; return; }
-                            renderPlan(box, j.data);
-                        })
-                        .catch(function(e){ box.innerHTML = '❌ ' + esc(e.message); });
+                    loadBuildPreview(orderId, box, false);
                 });
+            });
+
+            // Odśwież indeks magazynu (delegacja — przycisk renderowany dynamicznie)
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('.pjo-build-refresh') : null;
+                if (!b) return;
+                var orderId = b.getAttribute('data-order');
+                var row = document.getElementById('pjo-build-' + orderId);
+                if (!row) return;
+                loadBuildPreview(orderId, row.querySelector('.pjo-build-content'), true);
             });
 
             // Backfill: synchronizacja etapów z Photo Access (jednorazowo dla istniejących)

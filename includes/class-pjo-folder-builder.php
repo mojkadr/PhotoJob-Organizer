@@ -58,9 +58,7 @@ class PhotoJob_Folder_Builder {
         if ( $batch_number ) {
             $build_root .= '/' . self::fs_safe( $batch_number );
         }
-        $source_root = isset( $qopt['source_path'] ) && $qopt['source_path'] !== ''
-            ? '/' . trim( $qopt['source_path'], '/' )
-            : '/MójKadr/Sesje';
+        $source_root = self::source_root();
 
         $order_no = $order->get_order_number();
         $order_no = self::fs_safe( $order_no );
@@ -125,9 +123,11 @@ class PhotoJob_Folder_Builder {
                 continue;
             }
 
-            // Ścieżka docelowa (relatywna do build_root)
+            // Ścieżka docelowa (relatywna do build_root, który już zawiera numer wydruku).
+            // Płaska struktura: {Typ}/{Rozmiar} — sezon i nr zamówienia są w NAZWIE pliku,
+            // więc folderów dla nich nie dublujemy (krótsza ścieżka).
             $type_folder = $type !== '' ? self::fs_safe( $type ) : __( 'Inne', 'photojob-organizer' );
-            $rel_dir = trim( $season_label, '/' ) . '/' . $order_no . '/' . $type_folder . '/' . self::fs_safe( $size_norm );
+            $rel_dir = $type_folder . '/' . self::fs_safe( $size_norm );
             $rel_dir = preg_replace( '#/+#', '/', $rel_dir );
 
             $base_target = sprintf( '%s-%dx_%s_%s', $size_norm, $qty, $order_no, self::fs_safe( $source_name ) );
@@ -320,9 +320,8 @@ class PhotoJob_Folder_Builder {
                 $results[] = array( 'name' => $row['source_name'], 'status' => 'ok', 'msg' => $row['target_full'], 'order' => $plan['order_no'] );
             }
 
-            // Zapisz ścieżkę + stempel numeru wydruku przy każdym zamówieniu.
-            $order_base = $build_root . '/' . trim( $plan['season'], '/' ) . '/' . $plan['order_no'];
-            self::save_order_folder_path( $mid, $order_base );
+            // Zapisz ścieżkę (folder paczki wydruku) + stempel numeru przy każdym zamówieniu.
+            self::save_order_folder_path( $mid, $build_root );
             self::stamp_print_batch( $mid, $batch_number );
         }
 
@@ -392,6 +391,16 @@ class PhotoJob_Folder_Builder {
         } else {
             $wpdb->insert( $table, array( 'order_id' => $order_id, 'qnap_folder_path' => $path ) );
         }
+    }
+
+    /**
+     * Ścieżka magazynu źródłowego z ustawień (z fallbackiem).
+     */
+    public static function source_root() {
+        $qopt = get_option( 'pjo_settings_qnap', array() );
+        return isset( $qopt['source_path'] ) && $qopt['source_path'] !== ''
+            ? '/' . trim( $qopt['source_path'], '/' )
+            : '/MójKadr/Sesje';
     }
 
     /** ============ PARSING ============ */

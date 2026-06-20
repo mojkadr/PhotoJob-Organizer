@@ -1,5 +1,20 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.5] — 2026-06-20 — Cache indeksu magazynu + krótsza ścieżka druku
+
+### Performance
+- **Cache indeksu magazynu** (transient 15 min, klucz root+host+user). Skan ~5700 plików
+  po całym drzewie magazynu (jeden HTTP get_list na folder przez DDNS) leci teraz RAZ —
+  podgląd → wykonaj i kolejne zamówienia z tej samej sesji idą z cache (błyskawicznie).
+- Przycisk **🔄 Odśwież indeks** w panelu planu — wymusza świeży skan po dodaniu nowych sesji
+  (czyści transient). Cache utrwalany tylko gdy skan coś znalazł (pusty/błąd = nie cache'uje).
+
+### Changed — krótsza ścieżka druku
+- Struktura folderu druku spłaszczona: `{Wydruk}/{NUMER}/{Typ}/{Rozmiar}/…` — wycięte
+  `{Sezon}/{NrZam}` (numer zamówienia i sezon są w NAZWIE pliku, więc folderów nie dublujemy).
+  Było: `…/26ZiNMW1/2026-Wiosenna/15273/Wydruk odbitki/15x23`. Jest: `…/26ZiNMW1/Wydruk odbitki/15x23`.
+  Krótsza ścieżka = mniej `createdir` = szybsze wykonanie.
+
 ## [1.6.4] — 2026-06-20 — Autor MójKadr + instant-save ścieżki magazynu
 
 ### Fixed

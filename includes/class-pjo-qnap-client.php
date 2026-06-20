@@ -367,15 +367,49 @@ class PhotoJob_QNAP_Client {
     /** @var array Memoizacja indeksu per root (jeden request = jeden skan magazynu) */
     private $index_cache = array();
 
-    public function index_source_files( $root ) {
-        if ( isset( $this->index_cache[ $root ] ) ) {
+    /** Czas życia trwałego cache indeksu magazynu (transient) */
+    const INDEX_TTL = 900; // 15 min
+
+    /**
+     * Klucz transientu indeksu dla danego rootu (zależny od hosta/usera/rootu).
+     */
+    private function index_transient_key( $root ) {
+        return 'pjo_srcidx_' . md5( $root . '|' . $this->host . '|' . $this->user );
+    }
+
+    /**
+     * @param string $root
+     * @param bool   $force  true → pomiń cache i przeskanuj od nowa.
+     */
+    public function index_source_files( $root, $force = false ) {
+        if ( ! $force && isset( $this->index_cache[ $root ] ) ) {
             return $this->index_cache[ $root ];
+        }
+        $tkey = $this->index_transient_key( $root );
+        if ( ! $force ) {
+            $cached = get_transient( $tkey );
+            if ( is_array( $cached ) ) {
+                $this->index_cache[ $root ] = $cached;
+                return $cached;
+            }
         }
         $map = array();
         $count = 0;
         $this->index_recurse( $root, $map, $count, 0 );
         $this->index_cache[ $root ] = $map;
+        // Cache tylko niepusty wynik (pusty = zła ścieżka/błąd → nie utrwalaj).
+        if ( ! empty( $map ) ) {
+            set_transient( $tkey, $map, self::INDEX_TTL );
+        }
         return $map;
+    }
+
+    /**
+     * Wyczyść trwały cache indeksu magazynu (po dodaniu nowych sesji).
+     */
+    public function clear_source_index( $root ) {
+        unset( $this->index_cache[ $root ] );
+        delete_transient( $this->index_transient_key( $root ) );
     }
 
     private function index_recurse( $dir, &$map, &$count, $depth ) {
