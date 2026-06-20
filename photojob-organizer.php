@@ -1,11 +1,11 @@
 <?php
 /**
  * Plugin Name: PhotoJob Organizer
- * Plugin URI: https://github.com/yourusername/photojob-organizer
+ * Plugin URI: https://github.com/mojkadr/PhotoJob-Organizer
  * Description: Narzędzie do organizacji zamówień fotograficznych i generowania raportów księgowych
- * Version: 1.6.3
- * Author: Twoje Imię
- * Author URI: https://yourwebsite.com
+ * Version: 1.6.4
+ * Author: MójKadr
+ * Author URI: https://mojkadr.eu
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: photojob-organizer
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Definicje stałych
-define( 'PHOTOJOB_VERSION', '1.6.3' );
+define( 'PHOTOJOB_VERSION', '1.6.4' );
 define( 'PHOTOJOB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );

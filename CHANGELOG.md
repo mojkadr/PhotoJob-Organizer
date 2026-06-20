@@ -1,5 +1,19 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.4] — 2026-06-20 — Autor MójKadr + instant-save ścieżki magazynu
+
+### Fixed
+- Nagłówek wtyczki: **Author = MójKadr** (było „Twoje Imię"), Plugin URI / Author URI
+  ustawione na realne.
+- **Magazyn 0 plików = case-sensitive ścieżka.** Realna ścieżka to `/MójKadr/SESJE/…`
+  (`SESJE` wielkimi literami), a domyślne/zapisane `/MójKadr/Sesje` na QNAP (Linux) to
+  inny folder → 0 plików. Przeglądarka ścieżki to teraz pokazuje.
+
+### Changed
+- Przycisk **„✅ Użyj tej ścieżki jako magazynu"** w przeglądarce QNAP **zapisuje od ręki**
+  (AJAX `pjo_set_source_path`) — koniec szukania „Zapisz zmiany" na dole. Jeden klik =
+  ścieżka ustawiona i zapisana, wracasz do dashboardu i Folder Builder już ją widzi.
+
 ## [1.6.3] — 2026-06-20 — Auto-etap tylko dla zrealizowanych + przeglądarka ścieżki QNAP
 
 ### Changed

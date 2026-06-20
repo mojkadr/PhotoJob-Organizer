@@ -39,6 +39,7 @@ class PhotoJob_Settings {
         add_action( 'admin_post_pjo_refresh_cache', array( $this, 'handle_refresh_cache' ) );
         add_action( 'wp_ajax_pjo_test_qnap', array( $this, 'ajax_test_qnap' ) );
         add_action( 'wp_ajax_pjo_browse_qnap', array( $this, 'ajax_browse_qnap' ) );
+        add_action( 'wp_ajax_pjo_set_source_path', array( $this, 'ajax_set_source_path' ) );
     }
 
     public function handle_save() {
@@ -353,6 +354,29 @@ class PhotoJob_Settings {
             'file_count' => $file_count,
             'total'      => count( (array) $items ),
         ) );
+    }
+
+    /**
+     * Zapisz od ręki ścieżkę magazynu zdjęć (z przeglądarki) — żeby user nie musiał
+     * szukać „Zapisz zmiany" na dole. Merge do istniejącej opcji QNAP.
+     */
+    public function ajax_set_source_path() {
+        if ( ! current_user_can( 'pjo_manage_settings' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_qnap_test', 'nonce' );
+        $path = sanitize_text_field( wp_unslash( $_POST['path'] ?? '' ) );
+        $path = trim( $path );
+        if ( $path !== '' && $path !== '/' ) {
+            $path = '/' . trim( $path, '/' );
+        }
+        $q = get_option( 'pjo_settings_qnap', array() );
+        if ( ! is_array( $q ) ) {
+            $q = array();
+        }
+        $q['source_path'] = $path;
+        update_option( 'pjo_settings_qnap', $q );
+        wp_send_json_success( array( 'path' => $path ) );
     }
 
     /** ============ PASSWORD ENCRYPTION ============ */
@@ -758,7 +782,31 @@ class PhotoJob_Settings {
                 var dir = e.target.closest ? e.target.closest('.pjo-br-dir, .pjo-br-up') : null;
                 if (dir) { e.preventDefault(); browse(dir.getAttribute('data-path')); return; }
                 var use = e.target.closest ? e.target.closest('.pjo-br-use') : null;
-                if (use) { e.preventDefault(); input.value = use.getAttribute('data-path'); input.style.background = '#dff0d8'; setTimeout(function(){ input.style.background=''; }, 1200); }
+                if (use) {
+                    e.preventDefault();
+                    var p = use.getAttribute('data-path');
+                    input.value = p;
+                    input.style.background = '#dff0d8';
+                    use.disabled = true; use.textContent = '⏳ Zapisuję…';
+                    // Instant-save — bez szukania „Zapisz zmiany" na dole.
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_set_source_path');
+                    fd.append('nonce', nonce);
+                    fd.append('path', p);
+                    fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j){
+                            use.disabled = false;
+                            if (j.success) {
+                                use.textContent = '✅ <?php echo esc_js( __( 'Zapisano jako magazyn', 'photojob-organizer' ) ); ?>';
+                                setTimeout(function(){ input.style.background=''; }, 1500);
+                            } else {
+                                use.textContent = '✅ <?php echo esc_js( __( 'Użyj tej ścieżki jako magazynu', 'photojob-organizer' ) ); ?>';
+                                alert('Błąd zapisu: ' + (j.data && j.data.message ? j.data.message : '?'));
+                            }
+                        })
+                        .catch(function(err){ use.disabled = false; alert(err.message); });
+                }
             });
         })();
         </script>
