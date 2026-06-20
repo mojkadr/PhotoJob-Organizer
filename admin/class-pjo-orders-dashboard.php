@@ -64,18 +64,13 @@ class PhotoJob_Orders_Dashboard {
             "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key=%s AND meta_value=%s",
             PhotoJob_Access_Sync::GRANT_META, 'yes'
         ) );
-        $ptable = $wpdb->prefix . 'pjo_order_meta';
         $sync = PhotoJob_Access_Sync::get_instance();
         $updated = 0;
         foreach ( (array) $ids as $oid ) {
             $oid = (int) $oid;
-            $before = $wpdb->get_var( $wpdb->prepare( "SELECT production_status FROM {$ptable} WHERE order_id=%d", $oid ) );
-            // Guard spójny z auto-grantem: nie cofamy zaawansowanych etapów.
-            if ( $before !== null && ! in_array( $before, array( '', 'pending' ), true ) ) {
-                continue;
+            if ( $sync->auto_set_stage_on_grant( $oid ) ) {
+                $updated++;
             }
-            $sync->auto_set_stage_on_grant( $oid );
-            $updated++;
         }
         wp_send_json_success( array( 'scanned' => count( (array) $ids ), 'updated' => $updated ) );
     }

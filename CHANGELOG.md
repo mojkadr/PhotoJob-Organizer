@@ -1,5 +1,19 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.3] — 2026-06-20 — Auto-etap tylko dla zrealizowanych + przeglądarka ścieżki QNAP
+
+### Changed
+- Auto-etap produkcji (`PhotoJob_Access_Sync`) działa teraz **tylko dla zamówień
+  ZREALIZOWANYCH** (status `completed`). Photo Access auto-grantuje też na „W realizacji"
+  — te są pomijane. `auto_set_stage_on_grant()` zwraca bool → backfill liczy dokładnie.
+
+### Added — przeglądarka ścieżki magazynu (znajdź właściwą ścieżkę File Station)
+- Ustawienia → QNAP: przycisk **📂 Przeglądaj** przy polu „Ścieżka magazynu zdjęć".
+  Listuje zawartość ścieżki na NAS (zapisane credentialsy), foldery klikalne (drill-down),
+  „⬆ do góry", licznik plików, przycisk **✅ Użyj tej ścieżki**. Koniec zgadywania —
+  widać dokładnie co File Station widzi i ustawia się właściwą ścieżkę magazynu.
+  > Uwaga: „0 plików" na planie druku = magazyn źródłowy ma ZŁĄ ścieżkę — ustaw ją tutaj.
+
 ## [1.6.2] — 2026-06-20 — Auto-etap produkcji po grancie Photo Access
 
 ### Added — automatyczny etap produkcji

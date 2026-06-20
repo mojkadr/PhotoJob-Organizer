@@ -49,14 +49,22 @@ class PhotoJob_Access_Sync {
 
     /**
      * Ustaw etap produkcji po przyznaniu dostępu. Nie nadpisuje ręcznego postępu.
+     * Tylko dla ZREALIZOWANYCH zamówień.
+     *
+     * @return bool czy etap został zmieniony
      */
     public function auto_set_stage_on_grant( $order_id ) {
         if ( ! function_exists( 'wc_get_order' ) ) {
-            return;
+            return false;
         }
         $order = wc_get_order( $order_id );
         if ( ! $order ) {
-            return; // _ada_access_granted na nie-zamówieniu — ignoruj
+            return false; // _ada_access_granted na nie-zamówieniu — ignoruj
+        }
+
+        // Tylko dla ZREALIZOWANYCH zamówień (Photo Access auto-grantuje też na „processing").
+        if ( $order->get_status() !== 'completed' ) {
+            return false;
         }
 
         $stage = self::is_electronic_only( $order ) ? 'link_sent' : 'incomplete';
@@ -67,7 +75,11 @@ class PhotoJob_Access_Sync {
 
         // Nie cofaj ręcznie zaawansowanego etapu (np. shipped). Tylko świeże / pending.
         if ( $current !== null && ! in_array( $current, array( '', 'pending' ), true ) ) {
-            return;
+            return false;
+        }
+        // Nic do roboty jeśli już ustawiony na docelowy.
+        if ( $current === $stage ) {
+            return false;
         }
 
         $exists = $wpdb->get_var( $wpdb->prepare( "SELECT order_id FROM {$table} WHERE order_id=%d", $order_id ) );
@@ -85,6 +97,7 @@ class PhotoJob_Access_Sync {
             __( '[PJO] Photo Access przyznał dostęp → etap produkcji: %s.', 'photojob-organizer' ),
             $label
         ) );
+        return true;
     }
 
     /**

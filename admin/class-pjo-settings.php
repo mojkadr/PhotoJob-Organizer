@@ -38,6 +38,7 @@ class PhotoJob_Settings {
         add_action( 'admin_post_pjo_save_settings', array( $this, 'handle_save' ) );
         add_action( 'admin_post_pjo_refresh_cache', array( $this, 'handle_refresh_cache' ) );
         add_action( 'wp_ajax_pjo_test_qnap', array( $this, 'ajax_test_qnap' ) );
+        add_action( 'wp_ajax_pjo_browse_qnap', array( $this, 'ajax_browse_qnap' ) );
     }
 
     public function handle_save() {
@@ -288,6 +289,69 @@ class PhotoJob_Settings {
             'message' => sprintf( __( 'Połączenie OK. Login udany. Hasło z: %s. SID: %s…', 'photojob-organizer' ), $source, substr( $auth_sid, 0, 8 ) ),
             'host'    => $host,
             'user'    => $user,
+        ) );
+    }
+
+    /** ============ AJAX PRZEGLĄDARKA ŚCIEŻKI (znajdź ścieżkę magazynu) ============ */
+
+    /**
+     * Wylistuj zawartość ścieżki File Station (z ZAPISANYMI credentialsami) — żeby user
+     * znalazł właściwą ścieżkę magazynu zdjęć bez zgadywania. Foldery klikalne (drill-down).
+     */
+    public function ajax_browse_qnap() {
+        if ( ! current_user_can( 'pjo_manage_settings' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_qnap_test', 'nonce' );
+        if ( ! class_exists( 'PhotoJob_QNAP_Client' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Klient QNAP niedostępny.', 'photojob-organizer' ) ) );
+        }
+        $path = sanitize_text_field( wp_unslash( $_POST['path'] ?? '' ) );
+        $path = trim( $path );
+        if ( $path === '' ) {
+            $path = '/';
+        }
+        if ( $path[0] !== '/' ) {
+            $path = '/' . $path;
+        }
+        if ( $path !== '/' ) {
+            $path = '/' . trim( $path, '/' );
+        }
+
+        $qnap = new PhotoJob_QNAP_Client(); // zapisane ustawienia
+        if ( ! $qnap->is_configured() ) {
+            wp_send_json_error( array( 'message' => __( 'Najpierw ZAPISZ host/użytkownika/hasło QNAP (i przetestuj połączenie), potem przeglądaj.', 'photojob-organizer' ) ) );
+        }
+        if ( ! $qnap->login() ) {
+            wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP: ', 'photojob-organizer' ) . $qnap->last_error ) );
+        }
+        $items = $qnap->get_list( $path );
+        $qnap->logout();
+        if ( $items === false ) {
+            wp_send_json_error( array(
+                'message' => ( $qnap->last_error ? $qnap->last_error : __( 'Nie można wylistować ścieżki.', 'photojob-organizer' ) ),
+                'path'    => $path,
+            ) );
+        }
+        $folders = array();
+        $file_count = 0;
+        foreach ( (array) $items as $it ) {
+            $name = $it['filename'] ?? '';
+            if ( $name === '' || $name === '.' || $name === '..' ) {
+                continue;
+            }
+            if ( ! empty( $it['isfolder'] ) ) {
+                $folders[] = $name;
+            } else {
+                $file_count++;
+            }
+        }
+        sort( $folders );
+        wp_send_json_success( array(
+            'path'       => $path,
+            'folders'    => $folders,
+            'file_count' => $file_count,
+            'total'      => count( (array) $items ),
         ) );
     }
 
@@ -583,7 +647,9 @@ class PhotoJob_Settings {
                 <td><input type="text" class="regular-text" id="qnap_share_path" name="qnap_share_path" value="<?php echo esc_attr( $q['share_path'] ); ?>"></td></tr>
             <tr><th><label for="qnap_source_path"><?php _e( 'Ścieżka magazynu zdjęć', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_source_path" name="qnap_source_path" value="<?php echo esc_attr( $q['source_path'] ); ?>" placeholder="/SESJE/Zielony i Niebieski Motylek">
-                    <p class="description"><?php _e( 'Źródło — tu leżą oryginały sesji (Folder Builder szuka tu plików po nazwie produktu, rekurencyjnie po podfolderach lat/sezonów). To <strong>ścieżka File Station</strong> zaczynająca się od nazwy zasobu współdzielonego — np. dysk <code>M:\SESJE\Zielony i Niebieski Motylek</code> = <code>/SESJE/Zielony i Niebieski Motylek</code>. Bez ustawienia leci domyślne <code>/MójKadr/Sesje</code>.', 'photojob-organizer' ); ?></p>
+                    <button type="button" class="button" id="pjo-qnap-browse">📂 <?php _e( 'Przeglądaj', 'photojob-organizer' ); ?></button>
+                    <p class="description"><?php _e( 'Źródło — tu leżą oryginały sesji (Folder Builder szuka tu plików po nazwie produktu, rekurencyjnie po podfolderach lat/sezonów). To <strong>ścieżka File Station</strong> zaczynająca się od nazwy zasobu współdzielonego — np. dysk <code>M:\SESJE\Zielony i Niebieski Motylek</code> = <code>/SESJE/Zielony i Niebieski Motylek</code>. Bez ustawienia leci domyślne <code>/MójKadr/Sesje</code>. <strong>Najpierw zapisz hasło + przetestuj połączenie</strong>, potem „Przeglądaj" pokaże co NAS realnie widzi (klik w folder = wejdź głębiej).', 'photojob-organizer' ); ?></p>
+                    <div id="pjo-qnap-browse-result" style="margin-top:8px;"></div>
                 </td></tr>
             <tr><th><label for="qnap_print_build_path"><?php _e( 'Ścieżka budowania druku', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_print_build_path" name="qnap_print_build_path" value="<?php echo esc_attr( $q['print_build_path'] ); ?>" placeholder="/MójKadr/Druk">
@@ -644,6 +710,57 @@ class PhotoJob_Settings {
                 })
                 .catch(function(e) { out.innerHTML = '<span style="color:red;">❌ ' + e.message + '</span>'; });
         });
+
+        // Przeglądarka ścieżki magazynu — znajdź właściwą ścieżkę File Station bez zgadywania.
+        (function(){
+            var input = document.getElementById('qnap_source_path');
+            var box = document.getElementById('pjo-qnap-browse-result');
+            var nonce = '<?php echo esc_js( wp_create_nonce( 'pjo_qnap_test' ) ); ?>';
+            var ajaxUrl = '<?php echo esc_js( admin_url( 'admin-ajax.php' ) ); ?>';
+            function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+            function browse(path) {
+                box.innerHTML = '⏳ <?php echo esc_js( __( 'Listuję…', 'photojob-organizer' ) ); ?>';
+                var fd = new FormData();
+                fd.append('action', 'pjo_browse_qnap');
+                fd.append('nonce', nonce);
+                fd.append('path', path);
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j){
+                        if (!j.success) { box.innerHTML = '<div style="color:#c92a2a;">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</div>'; return; }
+                        var d = j.data;
+                        var html = '<div style="background:#fff;border:1px solid #c3c4c7;border-radius:4px;padding:8px 10px;max-width:640px;">';
+                        html += '<div style="margin-bottom:6px;"><strong><?php echo esc_js( __( 'Ścieżka:', 'photojob-organizer' ) ); ?></strong> <code>' + esc(d.path) + '</code> · <?php echo esc_js( __( 'plików tutaj:', 'photojob-organizer' ) ); ?> <strong>' + d.file_count + '</strong></div>';
+                        if (d.path !== '/') {
+                            var up = d.path.replace(/\/[^\/]+$/, '') || '/';
+                            html += '<div><a href="#" class="pjo-br-up" data-path="' + esc(up) + '">⬆ <?php echo esc_js( __( 'do góry', 'photojob-organizer' ) ); ?></a></div>';
+                        }
+                        if (d.folders && d.folders.length) {
+                            html += '<div style="margin-top:4px;"><strong><?php echo esc_js( __( 'Podfoldery (klik = wejdź):', 'photojob-organizer' ) ); ?></strong></div><div style="max-height:240px;overflow:auto;">';
+                            d.folders.forEach(function(f){
+                                var child = (d.path === '/' ? '' : d.path) + '/' + f;
+                                html += '<div>📁 <a href="#" class="pjo-br-dir" data-path="' + esc(child) + '">' + esc(f) + '</a></div>';
+                            });
+                            html += '</div>';
+                        } else {
+                            html += '<div style="margin-top:4px;color:#888;"><?php echo esc_js( __( 'Brak podfolderów.', 'photojob-organizer' ) ); ?></div>';
+                        }
+                        html += '<div style="margin-top:8px;"><button type="button" class="button button-small pjo-br-use" data-path="' + esc(d.path) + '">✅ <?php echo esc_js( __( 'Użyj tej ścieżki jako magazynu', 'photojob-organizer' ) ); ?></button></div>';
+                        html += '</div>';
+                        box.innerHTML = html;
+                    })
+                    .catch(function(e){ box.innerHTML = '<div style="color:#c92a2a;">❌ ' + esc(e.message) + '</div>'; });
+            }
+            document.getElementById('pjo-qnap-browse').addEventListener('click', function(){
+                browse(input.value || '/');
+            });
+            box.addEventListener('click', function(e){
+                var dir = e.target.closest ? e.target.closest('.pjo-br-dir, .pjo-br-up') : null;
+                if (dir) { e.preventDefault(); browse(dir.getAttribute('data-path')); return; }
+                var use = e.target.closest ? e.target.closest('.pjo-br-use') : null;
+                if (use) { e.preventDefault(); input.value = use.getAttribute('data-path'); input.style.background = '#dff0d8'; setTimeout(function(){ input.style.background=''; }, 1200); }
+            });
+        })();
         </script>
         <?php
     }
