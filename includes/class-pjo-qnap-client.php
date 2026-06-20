@@ -367,14 +367,27 @@ class PhotoJob_QNAP_Client {
     /** @var array Memoizacja indeksu per root (jeden request = jeden skan magazynu) */
     private $index_cache = array();
 
-    /** Czas życia trwałego cache indeksu magazynu (transient) */
+    /** Czas życia trwałego cache indeksu magazynu */
     const INDEX_TTL = 900; // 15 min
 
     /**
-     * Klucz transientu indeksu dla danego rootu (zależny od hosta/usera/rootu).
+     * Katalog cache (uploads/pjo-cache). Cache trzymamy w PLIKU, nie w transient/DB —
+     * mapa ~5700 plików (1–2 MB) bywa zbyt duża dla wp_options (max_allowed_packet)
+     * i przy wyłączonym object cache transient cicho nie zapisuje się → re-skan za każdym
+     * razem. Plik JSON jest pewny i szybki w odczycie.
      */
-    private function index_transient_key( $root ) {
-        return 'pjo_srcidx_' . md5( $root . '|' . $this->host . '|' . $this->user );
+    private function index_cache_dir() {
+        $u = wp_upload_dir();
+        $dir = trailingslashit( $u['basedir'] ) . 'pjo-cache';
+        if ( ! is_dir( $dir ) ) {
+            wp_mkdir_p( $dir );
+            @file_put_contents( $dir . '/index.html', '' ); // brak listingu
+        }
+        return $dir;
+    }
+
+    private function index_cache_file( $root ) {
+        return $this->index_cache_dir() . '/srcidx-' . md5( $root . '|' . $this->host . '|' . $this->user ) . '.json';
     }
 
     /**
@@ -385,12 +398,12 @@ class PhotoJob_QNAP_Client {
         if ( ! $force && isset( $this->index_cache[ $root ] ) ) {
             return $this->index_cache[ $root ];
         }
-        $tkey = $this->index_transient_key( $root );
-        if ( ! $force ) {
-            $cached = get_transient( $tkey );
-            if ( is_array( $cached ) ) {
-                $this->index_cache[ $root ] = $cached;
-                return $cached;
+        $file = $this->index_cache_file( $root );
+        if ( ! $force && is_readable( $file ) && ( time() - filemtime( $file ) ) < self::INDEX_TTL ) {
+            $map = json_decode( (string) file_get_contents( $file ), true );
+            if ( is_array( $map ) ) {
+                $this->index_cache[ $root ] = $map;
+                return $map;
             }
         }
         $map = array();
@@ -399,7 +412,7 @@ class PhotoJob_QNAP_Client {
         $this->index_cache[ $root ] = $map;
         // Cache tylko niepusty wynik (pusty = zła ścieżka/błąd → nie utrwalaj).
         if ( ! empty( $map ) ) {
-            set_transient( $tkey, $map, self::INDEX_TTL );
+            @file_put_contents( $file, wp_json_encode( $map ) );
         }
         return $map;
     }
@@ -409,7 +422,12 @@ class PhotoJob_QNAP_Client {
      */
     public function clear_source_index( $root ) {
         unset( $this->index_cache[ $root ] );
-        delete_transient( $this->index_transient_key( $root ) );
+        $file = $this->index_cache_file( $root );
+        if ( file_exists( $file ) ) {
+            @unlink( $file );
+        }
+        // sprzątanie po starym transiencie (z 1.6.5)
+        delete_transient( 'pjo_srcidx_' . md5( $root . '|' . $this->host . '|' . $this->user ) );
     }
 
     private function index_recurse( $dir, &$map, &$count, $depth ) {

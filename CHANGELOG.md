@@ -1,5 +1,19 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.6] — 2026-06-20 — Grupowe budowanie folderów + cache indeksu w pliku
+
+### Added — grupowe budowanie folderów druku
+- Zaznacz zamówienia (checkboxy) → pasek u góry → **🗂 Zbuduj foldery druku**. Buduje
+  wszystkie zaznaczone w JEDNYM żądaniu: **jedno logowanie + jeden skan magazynu** na całą
+  paczkę (zamiast login+skan per zlecenie). Każde zamówienie/grupa dostaje swój numer wydruku.
+  Pasek pokazuje się już przy 1 zaznaczonym; „Połącz w grupę pakowania" od 2.
+
+### Fixed — cache indeksu nie trzymał się między zleceniami
+- Cache indeksu magazynu przeniesiony z **transient (DB)** na **plik** (`uploads/pjo-cache/`).
+  Mapa ~5700 plików (1–2 MB) bywała za duża dla `wp_options` (max_allowed_packet) i przy
+  wyłączonym object cache transient cicho się nie zapisywał → re-skan przy KAŻDYM zleceniu.
+  Plik JSON jest pewny → skan leci raz na 15 min, kolejne zlecenia z cache.
+
 ## [1.6.5] — 2026-06-20 — Cache indeksu magazynu + krótsza ścieżka druku
 
 ### Performance
