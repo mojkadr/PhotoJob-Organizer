@@ -1,5 +1,51 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.6.10] — 2026-07-07 — Fix śmieciowego folderu formatu (legacy „23cm")
+
+### Fixed — stary zapis formatu po jednej krawędzi tworzył osobny folder
+- Stare zamówienia zapisywały format odbitki po **długim boku** (np. `23cm` = 15x23, `30cm` = 20x30).
+  `normalize_size()` rozpoznawał tylko format dwuwymiarowy (`15x23cm` → `15x23`), więc wartość
+  z jedną liczbą przechodziła surowa → powstawał **śmieciowy folder `23cm`** obok `15x23`/`20x30`.
+- Teraz etykieta po jednej krawędzi jest **dopasowywana do znanego formatu** (`23` → `15x23`,
+  `30` → `20x30`) i pliki lądują w tym samym folderze co reszta. Dopasowanie tylko gdy
+  **jednoznaczne** — przy kolizji krawędzi kod nie zgaduje (zostawia po staremu).
+- Lista formatów konfigurowalna: opcja `pjo_settings_qnap['print_formats']` lub filtr
+  `pjo_print_formats` (default: `15x23`, `20x30` = oferta sklepu).
+
+> Uwaga: dotyczy PRZYSZŁYCH builderów. Folder `23cm` z wcześniejszego testu skasuj/przebuduj —
+> te 4 zamówienia (15330, 15358, 15368, 15404) wpadną teraz do `15x23`.
+
+## [1.6.9] — 2026-06-25 — Poprawna ilość odbitek + wiele wydruków na zdjęcie (Folio BOX)
+
+### Fixed — ilość kopii w nazwie pliku
+- Nazwa pliku miała zawsze `-1x` (brało `get_quantity()` z koszyka = 1). Teraz liczba kopii =
+  **1 (bazowa) + „Ilość dodatkowych odbitek …"** z meta WAPF. Czyli `15x23-3x_…` gdy zamówiono
+  1 + 2 dodatkowe, `15x23-5x_…` gdy 1 + 4 itd.
+
+### Fixed — wiele wydruków na jednym zdjęciu (Folio BOX nie powstawał)
+- Parser brał tylko meta o wartości wyglądającej jak rozmiar (`\dx\d`), więc **„Karty Folio BOX"
+  (wartość „Biała ramka") były pomijane** — nie powstawał folder. Teraz jedno zdjęcie generuje
+  **tyle plików, ile ma typów wydruku**: np. `Wydruk odbitki/15x23/…` ORAZ
+  `Karty Folio BOX/Biała ramka/…` (ten sam plik źródłowy do obu folderów, własna ilość każdy).
+- „Wersja elektroniczna" (cyfrowa) pomijana — nie trafia do druku.
+
+## [1.6.8] — 2026-06-25 — Koniec folderów per zamówienie + dopisywanie do istniejącej paczki
+
+### Fixed — budowanie tylko zbiorczo → JEDEN folder
+- Per-wiersz **🗂** budował osobny numer/folder za każdym kliknięciem (`26ZiNMW5`, `W6`, `W7`…
+  jeden na zamówienie). Teraz **🗂 w wierszu = tylko PODGLĄD planu** — kopiowanie na QNAP
+  odbywa się wyłącznie **zbiorczo**: zaznacz zamówienia (1 lub wiele) i u góry kliknij
+  **„🗂 Zbuduj NOWY folder druku"** → wszystko trafia pod jeden numer. Per-order fragmentacja
+  jest teraz niemożliwa.
+- Podgląd ma przycisk **„✓ Zaznacz do druku"** (odhacza checkbox + przewija do paska zbiorczego).
+
+### Added — dodawanie zamówień do ISTNIEJĄCEGO folderu wydruku
+- W pasku zbiorczym: **➕ Dodaj** + lista ostatnich paczek (`26ZiNMW4 · N plik. · data`).
+  Zaznaczone zamówienia dopisują się do wybranego numeru, do tych samych podfolderów
+  `{Typ}/{Rozmiar}` — bez nowego numeru. Rekord paczki scala listę zamówień i dolicza pliki.
+- **Grupy pakowania** rozwijane automatycznie przy budowaniu/dopisywaniu (zaznaczenie jednego
+  dubla pociąga bliźniaka — idą do tego samego folderu).
+
 ## [1.6.7] — 2026-06-20 — Bulk = jeden folder akcji + select-all + numeracja od N
 
 ### Changed — grupowe budowanie = JEDEN folder akcji (poprawiony zamysł)

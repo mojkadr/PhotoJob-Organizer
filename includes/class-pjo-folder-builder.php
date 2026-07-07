@@ -80,80 +80,29 @@ class PhotoJob_Folder_Builder {
         foreach ( $order->get_items() as $item_id => $item ) {
             $product = $item->get_product();
             $source_name = trim( $item->get_name() );
-            $qty = max( 1, (int) $item->get_quantity() );
 
-            // Typ + Rozmiar z meta WAPF (wartość = rozmiar typu "15x23cm")
-            list( $type, $size_raw ) = self::extract_type_and_size( $item );
-            $size_norm = self::normalize_size( $size_raw );
-
-            // Sezon z kategorii produktu
+            // Sezon z kategorii produktu (wspólny dla wszystkich wydruków tego zdjęcia)
             $season_info = $product ? self::resolve_season_for_product( $product->get_id() ) : array( 'season' => '', 'year' => '' );
             $season_label = self::season_folder( $season_info );
             if ( $season_label !== '' ) {
                 $season_votes[ $season_label ] = ( $season_votes[ $season_label ] ?? 0 ) + 1;
             }
 
-            $row = array(
-                'item_id'     => $item_id,
-                'source_name' => $source_name,
-                'qty'         => $qty,
-                'type'        => $type,
-                'size_raw'    => $size_raw,
-                'size_norm'   => $size_norm,
-                'season'      => $season_label,
-                'skip'        => false,
-                'reason'      => '',
-                'source_found'=> null,
-                'source_dir'  => '',
-                'source_file' => '',
-                'ext'         => '',
-            );
-
-            // Walidacja: bez rozmiaru nie zbudujemy nazwy zgodnej z konwencją.
-            if ( $size_norm === '' ) {
-                $row['skip'] = true;
-                $row['reason'] = __( 'Brak rozmiaru (meta WAPF) — pozycja pominięta.', 'photojob-organizer' );
-                $items[] = $row;
+            // Jedno zdjęcie może mieć KILKA wydruków (odbitka 15x23 + karta Folio BOX itd.) —
+            // każdy = osobny plik w osobnym folderze {Typ}/{Rozmiar}. Ilość = 1 bazowa + dodatkowe.
+            $outputs = self::extract_print_outputs( $item );
+            if ( empty( $outputs ) ) {
+                $items[] = array(
+                    'item_id' => $item_id, 'source_name' => $source_name, 'qty' => 0,
+                    'type' => '', 'size_raw' => '', 'size_norm' => '', 'season' => $season_label,
+                    'skip' => true, 'reason' => __( 'Brak pozycji do druku (np. tylko wersja elektroniczna).', 'photojob-organizer' ),
+                    'source_found' => null, 'source_dir' => '', 'source_file' => '', 'ext' => '',
+                );
                 continue;
             }
-            if ( $source_name === '' ) {
-                $row['skip'] = true;
-                $row['reason'] = __( 'Brak nazwy produktu/pliku.', 'photojob-organizer' );
-                $items[] = $row;
-                continue;
+            foreach ( $outputs as $out ) {
+                $items[] = self::build_output_row( $item_id, $source_name, $out, $season_label, $order_no, $build_root, $source_index );
             }
-
-            // Ścieżka docelowa (relatywna do build_root, który już zawiera numer wydruku).
-            // Płaska struktura: {Typ}/{Rozmiar} — sezon i nr zamówienia są w NAZWIE pliku,
-            // więc folderów dla nich nie dublujemy (krótsza ścieżka).
-            $type_folder = $type !== '' ? self::fs_safe( $type ) : __( 'Inne', 'photojob-organizer' );
-            $rel_dir = $type_folder . '/' . self::fs_safe( $size_norm );
-            $rel_dir = preg_replace( '#/+#', '/', $rel_dir );
-
-            $base_target = sprintf( '%s-%dx_%s_%s', $size_norm, $qty, $order_no, self::fs_safe( $source_name ) );
-
-            $row['target_dir'] = $rel_dir;
-            $row['target_dir_full'] = $build_root . '/' . $rel_dir;
-            $row['target_base'] = $base_target; // bez rozszerzenia
-
-            // Dry-run: dopasuj plik źródłowy
-            if ( is_array( $source_index ) ) {
-                $key = mb_strtolower( PhotoJob_QNAP_Client::strip_ext( $source_name ) );
-                if ( isset( $source_index[ $key ] ) ) {
-                    $row['source_found'] = true;
-                    $row['source_dir']  = $source_index[ $key ]['dir'];
-                    $row['source_file'] = $source_index[ $key ]['file'];
-                    $row['ext'] = PhotoJob_QNAP_Client::get_ext( $source_index[ $key ]['file'] );
-                } else {
-                    $row['source_found'] = false;
-                    $row['reason'] = __( 'Plik nie znaleziony w magazynie źródłowym.', 'photojob-organizer' );
-                }
-            }
-            $ext = $row['ext'] !== '' ? '.' . $row['ext'] : '';
-            $row['target_filename'] = $base_target . $ext;
-            $row['target_full'] = $row['target_dir_full'] . '/' . $row['target_filename'];
-
-            $items[] = $row;
         }
 
         // Sezon na poziomie zamówienia = najczęstszy
@@ -325,7 +274,7 @@ class PhotoJob_Folder_Builder {
      * @return array {batch_number, copied, created_dirs, errors, base_path, orders, results}
      */
     public static function execute_bulk( array $order_ids, PhotoJob_QNAP_Client $qnap ) {
-        $order_ids = array_values( array_unique( array_filter( array_map( 'absint', $order_ids ) ) ) );
+        $order_ids = self::expand_with_pack_groups( $order_ids );
         if ( empty( $order_ids ) ) {
             return array( 'error' => __( 'Brak zamówień.', 'photojob-organizer' ) );
         }
@@ -335,6 +284,93 @@ class PhotoJob_Folder_Builder {
         $num = PhotoJob_Print_Batch::generate_number( $ctx['client'], $ctx['season'], $ctx['year'] );
         $batch_number = $num['number'];
 
+        $r = self::build_orders_into_batch( $order_ids, $batch_number, $qnap );
+
+        if ( $r['copied'] > 0 || ! empty( $r['built_orders'] ) ) {
+            PhotoJob_Print_Batch::save( array(
+                'number'          => $batch_number,
+                'client_initials' => $num['client_initials'],
+                'season_letter'   => $num['season_letter'],
+                'year2'           => $num['year2'],
+                'qnap_path'       => $r['build_root'],
+                'order_ids'       => $r['built_orders'],
+                'file_count'      => $r['copied'],
+                'status'          => empty( $r['errors'] ) ? 'built' : 'partial',
+            ) );
+        }
+
+        return array(
+            'batch_number' => $batch_number,
+            'copied'       => $r['copied'],
+            'created_dirs' => count( $r['made_dirs'] ),
+            'errors'       => $r['errors'],
+            'base_path'    => $r['build_root'],
+            'orders'       => $r['built_orders'],
+            'results'      => $r['results'],
+        );
+    }
+
+    /**
+     * DOPISANIE do istniejącego folderu wydruku: zaznaczone zamówienia trafiają pod
+     * JUŻ ISTNIEJĄCY numer (np. 26ZiNMW4), do tych samych podfolderów {Typ}/{Rozmiar}.
+     * make_path jest idempotentne — istniejące foldery nie są dublowane.
+     *
+     * @param int[]  $order_ids
+     * @param string $batch_number  istniejący numer wydruku
+     * @return array {batch_number, copied, created_dirs, errors, base_path, orders, results}
+     */
+    public static function execute_into_batch( array $order_ids, $batch_number, PhotoJob_QNAP_Client $qnap ) {
+        $batch_number = self::fs_safe( (string) $batch_number );
+        if ( $batch_number === '' ) {
+            return array( 'error' => __( 'Brak numeru wydruku.', 'photojob-organizer' ) );
+        }
+        $order_ids = self::expand_with_pack_groups( $order_ids );
+        if ( empty( $order_ids ) ) {
+            return array( 'error' => __( 'Brak zamówień.', 'photojob-organizer' ) );
+        }
+
+        $r = self::build_orders_into_batch( $order_ids, $batch_number, $qnap );
+
+        // Dopisz do istniejącego rekordu paczki (scal listę zamówień + dolicz pliki).
+        if ( $r['copied'] > 0 || ! empty( $r['built_orders'] ) ) {
+            PhotoJob_Print_Batch::append_record( $batch_number, $r['built_orders'], $r['copied'], $r['build_root'] );
+        }
+
+        return array(
+            'batch_number' => $batch_number,
+            'copied'       => $r['copied'],
+            'created_dirs' => count( $r['made_dirs'] ),
+            'errors'       => $r['errors'],
+            'base_path'    => $r['build_root'],
+            'orders'       => $r['built_orders'],
+            'results'      => $r['results'],
+            'appended'     => true,
+        );
+    }
+
+    /**
+     * Rozwiń zaznaczenie o członków grup pakowania (dubel idzie razem z bliźniakiem),
+     * usuń duplikaty i puste.
+     *
+     * @return int[]
+     */
+    private static function expand_with_pack_groups( array $order_ids ) {
+        $order_ids = array_filter( array_map( 'absint', $order_ids ) );
+        $expanded = array();
+        foreach ( $order_ids as $oid ) {
+            foreach ( self::pack_group_members( $oid ) as $m ) {
+                $expanded[ (int) $m ] = true;
+            }
+        }
+        return array_keys( $expanded );
+    }
+
+    /**
+     * Wspólna pętla budowania: każde zamówienie → plan pod wskazanym numerem → kopia na QNAP.
+     *
+     * @return array {copied:int, errors:array, made_dirs:array, build_root:string, built_orders:int[], results:array}
+     */
+    private static function build_orders_into_batch( array $order_ids, $batch_number, PhotoJob_QNAP_Client $qnap ) {
         $results = array();
         $copied = 0;
         $errors = array();
@@ -357,26 +393,12 @@ class PhotoJob_Folder_Builder {
             $built_orders[] = $oid;
         }
 
-        if ( $copied > 0 || ! empty( $built_orders ) ) {
-            PhotoJob_Print_Batch::save( array(
-                'number'          => $batch_number,
-                'client_initials' => $num['client_initials'],
-                'season_letter'   => $num['season_letter'],
-                'year2'           => $num['year2'],
-                'qnap_path'       => $build_root,
-                'order_ids'       => $built_orders,
-                'file_count'      => $copied,
-                'status'          => empty( $errors ) ? 'built' : 'partial',
-            ) );
-        }
-
         return array(
-            'batch_number' => $batch_number,
             'copied'       => $copied,
-            'created_dirs' => count( $made_dirs ),
             'errors'       => $errors,
-            'base_path'    => $build_root,
-            'orders'       => $built_orders,
+            'made_dirs'    => $made_dirs,
+            'build_root'   => $build_root,
+            'built_orders' => $built_orders,
             'results'      => $results,
         );
     }
@@ -508,15 +530,23 @@ class PhotoJob_Folder_Builder {
     /** ============ PARSING ============ */
 
     /**
-     * Wyciągnij Typ (klucz meta) + Rozmiar (wartość) z meta WAPF line itemu.
-     * Bierzemy meta, której WARTOŚĆ wygląda jak rozmiar (\d+ x \d+).
+     * Wyciągnij LISTĘ wydruków z line itemu (meta WAPF). Jedno zdjęcie może mieć kilka
+     * wydruków naraz, np. „Wydruk odbitki" 15x23 + „Karty Folio BOX" Biała ramka.
      *
-     * @return array [type, size_raw]
+     * Każdy wydruk to osobna pozycja {type, size_raw, qty}, gdzie:
+     *  - type     = klucz meta (np. „Wydruk odbitki", „Karty Folio BOX")
+     *  - size_raw = wartość (np. „15x23cm" albo wariant „Biała ramka")
+     *  - qty      = 1 (bazowa) + „Ilość dodatkowych …" dopasowana po wartości w kluczu
+     *
+     * Pomijamy meta „Wersja elektroniczna" (cyfrowa — bez druku) oraz same meta ilości.
+     *
+     * @return array<array{type:string, size_raw:string, qty:int}>
      */
-    private static function extract_type_and_size( $item ) {
-        $fallback_type = '';
+    private static function extract_print_outputs( $item ) {
+        $prints = array(); // [ ['key'=>, 'val'=>], ... ]
+        $qtys   = array(); // [ ['key'=>, 'n'=>int], ... ]
         foreach ( $item->get_meta_data() as $meta ) {
-            $k = $meta->key;
+            $k = trim( (string) $meta->key );
             if ( $k === '' || substr( $k, 0, 1 ) === '_' ) {
                 continue;
             }
@@ -525,28 +555,158 @@ class PhotoJob_Folder_Builder {
             if ( $v_clean === '' ) {
                 continue;
             }
-            if ( $fallback_type === '' ) {
-                $fallback_type = $k;
-            }
-            if ( preg_match( '/\d+\s*[x×]\s*\d+/u', $v_clean ) ) {
-                return array( trim( $k ), $v_clean );
+            if ( self::is_quantity_meta( $k ) ) {
+                $n = preg_match( '/\d+/', $v_clean, $mm ) ? (int) $mm[0] : 0;
+                $qtys[] = array( 'key' => $k, 'n' => $n );
+            } elseif ( self::is_digital_meta( $k ) ) {
+                continue; // wersja elektroniczna — nic do druku
+            } else {
+                $prints[] = array( 'key' => $k, 'val' => $v_clean );
             }
         }
-        // Brak meta-rozmiaru — zwróć typ fallback bez rozmiaru.
-        return array( $fallback_type, '' );
+
+        $outputs = array();
+        foreach ( $prints as $p ) {
+            $qty = 1; // bazowa odbitka / karta
+            foreach ( $qtys as $q ) {
+                // „Ilość dodatkowych odbitek 15x23cm" zawiera wartość wydruku „15x23cm";
+                // „Ilość dodatkowych kart Folio BOX Biała ramka" zawiera „Biała ramka".
+                if ( $p['val'] !== '' && mb_stripos( $q['key'], $p['val'] ) !== false ) {
+                    $qty += (int) $q['n'];
+                    break;
+                }
+            }
+            $outputs[] = array(
+                'type'     => $p['key'],
+                'size_raw' => $p['val'],
+                'qty'      => max( 1, $qty ),
+            );
+        }
+        return $outputs;
+    }
+
+    /** Meta „Ilość dodatkowych …" (liczba kopii), nie produkt do druku. */
+    private static function is_quantity_meta( $key ) {
+        $k = mb_strtolower( (string) $key, 'UTF-8' );
+        return strpos( $k, 'dodatkow' ) !== false && ( strpos( $k, 'ilo' ) !== false );
+    }
+
+    /** Meta wersji cyfrowej — bez druku fizycznego. */
+    private static function is_digital_meta( $key ) {
+        return mb_stripos( (string) $key, 'elektronicz' ) !== false;
+    }
+
+    /**
+     * Zbuduj wiersz planu dla JEDNEGO wydruku (typ+rozmiar+ilość) danego zdjęcia.
+     *
+     * @return array
+     */
+    private static function build_output_row( $item_id, $source_name, $out, $season_label, $order_no, $build_root, $source_index ) {
+        $type = $out['type'];
+        $size_raw = $out['size_raw'];
+        $qty = max( 1, (int) $out['qty'] );
+        $size_norm = self::normalize_size( $size_raw );
+
+        $row = array(
+            'item_id' => $item_id, 'source_name' => $source_name, 'qty' => $qty,
+            'type' => $type, 'size_raw' => $size_raw, 'size_norm' => $size_norm,
+            'season' => $season_label, 'skip' => false, 'reason' => '',
+            'source_found' => null, 'source_dir' => '', 'source_file' => '', 'ext' => '',
+        );
+        if ( $size_norm === '' ) {
+            $row['skip'] = true;
+            $row['reason'] = __( 'Brak rozmiaru/wariantu (meta WAPF) — pozycja pominięta.', 'photojob-organizer' );
+            return $row;
+        }
+        if ( $source_name === '' ) {
+            $row['skip'] = true;
+            $row['reason'] = __( 'Brak nazwy produktu/pliku.', 'photojob-organizer' );
+            return $row;
+        }
+
+        // Płaska struktura: {Typ}/{Rozmiar} — sezon i nr zamówienia są w NAZWIE pliku.
+        $type_folder = $type !== '' ? self::fs_safe( $type ) : __( 'Inne', 'photojob-organizer' );
+        $rel_dir = preg_replace( '#/+#', '/', $type_folder . '/' . self::fs_safe( $size_norm ) );
+        $base_target = sprintf( '%s-%dx_%s_%s', $size_norm, $qty, $order_no, self::fs_safe( $source_name ) );
+
+        $row['target_dir'] = $rel_dir;
+        $row['target_dir_full'] = $build_root . '/' . $rel_dir;
+        $row['target_base'] = $base_target;
+
+        if ( is_array( $source_index ) ) {
+            $key = mb_strtolower( PhotoJob_QNAP_Client::strip_ext( $source_name ) );
+            if ( isset( $source_index[ $key ] ) ) {
+                $row['source_found'] = true;
+                $row['source_dir']  = $source_index[ $key ]['dir'];
+                $row['source_file'] = $source_index[ $key ]['file'];
+                $row['ext'] = PhotoJob_QNAP_Client::get_ext( $source_index[ $key ]['file'] );
+            } else {
+                $row['source_found'] = false;
+                $row['reason'] = __( 'Plik nie znaleziony w magazynie źródłowym.', 'photojob-organizer' );
+            }
+        }
+        $ext = $row['ext'] !== '' ? '.' . $row['ext'] : '';
+        $row['target_filename'] = $base_target . $ext;
+        $row['target_full'] = $row['target_dir_full'] . '/' . $row['target_filename'];
+        return $row;
     }
 
     /**
      * "15x23cm" → "15x23" ; "15 x 23 cm" → "15x23".
+     *
+     * Legacy: stare zamówienia zapisywały format po JEDNEJ krawędzi (długi bok),
+     * np. „23cm" = 15x23, „30cm" = 20x30. Taka wartość (jedna liczba) nie łapie się
+     * w regex dwuwymiarowy i tworzyła śmieciowy folder „23cm". Dopasowujemy ją do
+     * znanego formatu po krawędzi — ale TYLKO gdy dopasowanie jest jednoznaczne.
      */
     public static function normalize_size( $size_raw ) {
         if ( $size_raw === '' ) {
             return '';
         }
+        // Pełny format dwuwymiarowy: "15x23cm" → "15x23".
         if ( preg_match( '/(\d+)\s*[x×]\s*(\d+)/u', $size_raw, $m ) ) {
             return $m[1] . 'x' . $m[2];
         }
+        // Legacy: etykieta po jednej krawędzi ("23cm" / "23 cm" / "23") → scal do formatu.
+        if ( preg_match( '/^\s*(\d+)\s*(?:cm)?\s*$/u', $size_raw, $m ) ) {
+            $alias = self::resolve_single_edge( (int) $m[1] );
+            if ( $alias !== '' ) {
+                return $alias;
+            }
+        }
         return self::fs_safe( $size_raw );
+    }
+
+    /**
+     * Dopasuj pojedynczą krawędź (np. 23) do pełnego formatu odbitki (np. "15x23"),
+     * jeśli DOKŁADNIE jeden znany format ma tę krawędź. Niejednoznaczne / brak → "".
+     */
+    private static function resolve_single_edge( $edge ) {
+        if ( $edge <= 0 ) {
+            return '';
+        }
+        $matches = array();
+        foreach ( self::known_formats() as $f ) {
+            if ( preg_match( '/^(\d+)x(\d+)$/', $f, $m )
+                && ( (int) $m[1] === $edge || (int) $m[2] === $edge ) ) {
+                $matches[ $f ] = true;
+            }
+        }
+        return count( $matches ) === 1 ? (string) key( $matches ) : '';
+    }
+
+    /**
+     * Znane formaty odbitek (znormalizowane "NxM"). Z ustawień, z fallbackiem na
+     * ofertę sklepu. Filtr `pjo_print_formats` pozwala nadpisać bez ruszania kodu.
+     *
+     * @return string[]
+     */
+    private static function known_formats() {
+        $opt = get_option( 'pjo_settings_qnap', array() );
+        $formats = ( ! empty( $opt['print_formats'] ) && is_array( $opt['print_formats'] ) )
+            ? $opt['print_formats']
+            : array( '15x23', '20x30' );
+        return (array) apply_filters( 'pjo_print_formats', $formats );
     }
 
     /**

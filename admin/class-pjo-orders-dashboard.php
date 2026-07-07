@@ -38,6 +38,7 @@ class PhotoJob_Orders_Dashboard {
         add_action( 'wp_ajax_pjo_build_preview', array( $this, 'ajax_build_preview' ) );
         add_action( 'wp_ajax_pjo_build_execute', array( $this, 'ajax_build_execute' ) );
         add_action( 'wp_ajax_pjo_build_bulk', array( $this, 'ajax_build_bulk' ) );
+        add_action( 'wp_ajax_pjo_build_append', array( $this, 'ajax_build_append' ) );
         add_action( 'wp_ajax_pjo_link_pack_group', array( $this, 'ajax_link_pack_group' ) );
         add_action( 'wp_ajax_pjo_unlink_pack_group', array( $this, 'ajax_unlink_pack_group' ) );
         add_action( 'wp_ajax_pjo_regrant_access', array( $this, 'ajax_regrant_access' ) );
@@ -255,6 +256,51 @@ class PhotoJob_Orders_Dashboard {
             'errors'       => count( (array) $res['errors'] ),
             'created_dirs' => (int) $res['created_dirs'],
             'base_path'    => $res['base_path'],
+        ) );
+    }
+
+    /**
+     * Dopisanie zaznaczonych zamówień do JUŻ ISTNIEJĄCEGO folderu wydruku (numeru).
+     */
+    public function ajax_build_append() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+        $ids = isset( $_POST['order_ids'] ) ? array_map( 'absint', (array) $_POST['order_ids'] ) : array();
+        $ids = array_values( array_unique( array_filter( $ids ) ) );
+        $batch_number = sanitize_text_field( wp_unslash( $_POST['batch_number'] ?? '' ) );
+        if ( empty( $ids ) ) {
+            wp_send_json_error( array( 'message' => __( 'Nie zaznaczono zamówień.', 'photojob-organizer' ) ) );
+        }
+        if ( $batch_number === '' ) {
+            wp_send_json_error( array( 'message' => __( 'Nie wybrano folderu wydruku.', 'photojob-organizer' ) ) );
+        }
+        @set_time_limit( 0 );
+        ignore_user_abort( true );
+
+        $qnap = new PhotoJob_QNAP_Client();
+        if ( ! $qnap->is_configured() ) {
+            wp_send_json_error( array( 'message' => __( 'QNAP nie jest skonfigurowany.', 'photojob-organizer' ) ) );
+        }
+        if ( ! $qnap->login() ) {
+            wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP: ', 'photojob-organizer' ) . $qnap->last_error ) );
+        }
+        $qnap->index_source_files( PhotoJob_Folder_Builder::source_root() );
+
+        $res = PhotoJob_Folder_Builder::execute_into_batch( $ids, $batch_number, $qnap );
+        $qnap->logout();
+        if ( isset( $res['error'] ) ) {
+            wp_send_json_error( array( 'message' => $res['error'] ) );
+        }
+        wp_send_json_success( array(
+            'batch_number' => $res['batch_number'],
+            'orders'       => count( (array) $res['orders'] ),
+            'copied'       => (int) $res['copied'],
+            'errors'       => count( (array) $res['errors'] ),
+            'created_dirs' => (int) $res['created_dirs'],
+            'base_path'    => $res['base_path'],
+            'appended'     => true,
         ) );
     }
 
@@ -510,9 +556,25 @@ class PhotoJob_Orders_Dashboard {
                 <span id="pjo-sync-stages-result" style="margin-left:8px;font-size:12px;"></span>
                 <span class="description" style="font-size:11px;margin-left:6px;"><?php _e( 'Ustawia etap (📧 Link wysłany / ⚠ Niekompletne) dla zamówień, które już mają przyznany dostęp do zdjęć.', 'photojob-organizer' ); ?></span>
             </div>
-            <div id="pjo-pack-bar" style="display:none;background:#fff;border:1px solid #c3c4c7;padding:8px 12px;margin:10px 0;border-radius:4px;">
+            <?php $recent_batches = class_exists( 'PhotoJob_Print_Batch' ) ? PhotoJob_Print_Batch::recent( 25 ) : array(); ?>
+            <div id="pjo-pack-bar" style="display:none;background:#fff;border:1px solid #c3c4c7;padding:8px 12px;margin:10px 0;border-radius:4px;line-height:2;">
                 <strong><?php _e( 'Zaznaczone:', 'photojob-organizer' ); ?> <span id="pjo-pack-count">0</span></strong>
-                <button type="button" class="button button-primary" id="pjo-pack-build">🗂 <?php _e( 'Zbuduj foldery druku', 'photojob-organizer' ); ?></button>
+                <button type="button" class="button button-primary" id="pjo-pack-build">🗂 <?php _e( 'Zbuduj NOWY folder druku', 'photojob-organizer' ); ?></button>
+                <span style="margin:0 4px;color:#aaa;">|</span>
+                <label><?php _e( 'albo dodaj do istniejącego:', 'photojob-organizer' ); ?>
+                    <select id="pjo-append-batch" style="max-width:240px;">
+                        <option value=""><?php _e( '— wybierz folder —', 'photojob-organizer' ); ?></option>
+                        <?php foreach ( $recent_batches as $b ) :
+                            $bn = $b['number'];
+                            $cnt = (int) $b['file_count'];
+                            $when = ! empty( $b['created_at'] ) ? mysql2date( 'd.m', $b['created_at'] ) : '';
+                            ?>
+                            <option value="<?php echo esc_attr( $bn ); ?>"><?php echo esc_html( $bn . ' · ' . $cnt . ' plik. · ' . $when ); ?></option>
+                        <?php endforeach; ?>
+                    </select>
+                </label>
+                <button type="button" class="button" id="pjo-pack-append">➕ <?php _e( 'Dodaj', 'photojob-organizer' ); ?></button>
+                <span style="margin:0 4px;color:#aaa;">|</span>
                 <button type="button" class="button" id="pjo-pack-link">📦 <?php _e( 'Połącz w grupę pakowania', 'photojob-organizer' ); ?></button>
                 <span id="pjo-pack-result" style="margin-left:8px;font-size:12px;"></span>
             </div>
@@ -766,6 +828,35 @@ class PhotoJob_Orders_Dashboard {
                     })
                     .catch(function(e){ packBuildBtn.disabled = false; res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
             });
+            // Dodaj zaznaczone do ISTNIEJĄCEGO folderu wydruku (numeru z dropdownu)
+            var packAppendBtn = document.getElementById('pjo-pack-append');
+            var appendSelect = document.getElementById('pjo-append-batch');
+            if (packAppendBtn) packAppendBtn.addEventListener('click', function() {
+                var ids = selectedPackIds();
+                var batch = appendSelect ? appendSelect.value : '';
+                if (ids.length < 1) { alert('Najpierw zaznacz zamówienia.'); return; }
+                if (!batch) { alert('Wybierz istniejący folder wydruku z listy.'); return; }
+                if (!confirm('Dodać ' + ids.length + ' zaznaczonych zamówień do istniejącego folderu ' + batch + '?\nPliki trafią do tych samych podfolderów formatu — bez nowego numeru.')) return;
+                var res = document.getElementById('pjo-pack-result');
+                packAppendBtn.disabled = true; res.textContent = '⏳ Dodaję do ' + batch + '…';
+                var fd = new FormData();
+                fd.append('action', 'pjo_build_append');
+                fd.append('nonce', nonce);
+                fd.append('batch_number', batch);
+                ids.forEach(function(id){ fd.append('order_ids[]', id); });
+                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                    .then(function(r){ return r.json(); })
+                    .then(function(j){
+                        packAppendBtn.disabled = false;
+                        if (!j.success) { res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                        var d = j.data;
+                        var errs = d.errors ? ' · <span class="pjo-st-error">błędy: ' + d.errors + '</span>' : '';
+                        res.innerHTML = '✅ Dopisano do <strong>' + esc(d.batch_number) + '</strong> — ' + d.orders + ' zam., skopiowano <strong>' + d.copied + '</strong> do <code>' + esc(d.base_path) + '</code>' + errs + ' — odświeżam…';
+                        setTimeout(function(){ location.reload(); }, 1600);
+                    })
+                    .catch(function(e){ packAppendBtn.disabled = false; res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
+            });
+
             var packLinkBtn = document.getElementById('pjo-pack-link');
             if (packLinkBtn) packLinkBtn.addEventListener('click', function() {
                 var ids = selectedPackIds();
@@ -856,14 +947,14 @@ class PhotoJob_Orders_Dashboard {
 
                 html += tableHtml;
 
-                html += '<div class="pjo-build-actions">';
+                html += '<div class="pjo-build-actions" style="flex-wrap:wrap;">';
                 if (totalOk > 0) {
-                    html += '<button class="button button-primary pjo-build-exec" data-order="' + orderId + '">▶ Wykonaj na QNAP (' + totalOk + ' plik(ów))</button>';
+                    html += '<button class="button button-primary pjo-build-select" data-order="' + orderId + '">✓ Zaznacz do druku</button>';
+                    html += '<span class="pjo-warn" style="margin:0;">To tylko <strong>podgląd</strong>. Budowanie odbywa się <strong>zbiorczo → jeden folder</strong>: zaznacz zamówienia i u góry kliknij <strong>„🗂 Zbuduj NOWY folder druku"</strong> (np. <code>26Z…</code>) albo <strong>„➕ Dodaj"</strong> do istniejącego.</span>';
                 } else {
                     html += '<em>Brak plików gotowych do skopiowania (sprawdź dopasowanie nazw / magazyn źródłowy).</em>';
                 }
                 html += '<span style="font-size:12px;color:#555;">Gotowe: <strong class="pjo-st-ok">' + totalOk + '</strong> · Brak źródła: <strong class="pjo-st-missing">' + totalMiss + '</strong> · Pominięte: <strong>' + totalSkip + '</strong></span>';
-                html += '<span class="pjo-build-exec-result" style="font-size:12px;"></span>';
                 html += '</div>';
                 box.innerHTML = html;
             }
@@ -895,6 +986,18 @@ class PhotoJob_Orders_Dashboard {
                     row.style.display = 'table-row';
                     loadBuildPreview(orderId, box, false);
                 });
+            });
+
+            // „Zaznacz do druku" z podglądu pojedynczego zamówienia → odhacz checkbox + pokaż pasek zbiorczy
+            document.addEventListener('click', function(e) {
+                var b = e.target.closest ? e.target.closest('.pjo-build-select') : null;
+                if (!b) return;
+                var orderId = b.getAttribute('data-order');
+                var cb = document.querySelector('.pjo-pack-cb[value="' + orderId + '"]');
+                if (cb) { cb.checked = true; refreshPackBar(); }
+                b.textContent = '✓ Zaznaczone';
+                b.disabled = true;
+                if (packBar) packBar.scrollIntoView({ behavior: 'smooth', block: 'center' });
             });
 
             // Odśwież indeks magazynu (delegacja — przycisk renderowany dynamicznie)
@@ -1142,7 +1245,7 @@ class PhotoJob_Orders_Dashboard {
             <td style="white-space:nowrap;">
                 <a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank" class="button button-small" title="<?php esc_attr_e( 'Edytuj w WooCommerce', 'photojob-organizer' ); ?>">↗</a>
                 <?php if ( ! $is_worker ) : ?>
-                    <button class="button button-small pjo-build-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Zbuduj folder druku na QNAP', 'photojob-organizer' ); ?>">🗂</button>
+                    <button class="button button-small pjo-build-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Podgląd planu druku (budowanie zbiorczo → jeden folder, u góry)', 'photojob-organizer' ); ?>">🗂</button>
                     <button class="button button-small pjo-regrant-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Photo Access: wymuś ponowne przyznanie dostępu (ponowny link do klienta)', 'photojob-organizer' ); ?>">🔓</button>
                 <?php endif; ?>
                 <?php if ( ! empty( $meta['qnap_folder_path'] ) ) : ?>

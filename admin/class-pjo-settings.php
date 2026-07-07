@@ -402,7 +402,7 @@ class PhotoJob_Settings {
         PhotoJob_Print_Batch::reset_counter();
         global $wpdb;
         $wpdb->query( "DELETE FROM {$wpdb->prefix}pjo_print_batches" );
-        $wpdb->query( "UPDATE {$wpdb->prefix}pjo_order_meta SET print_batch = NULL" );
+        $wpdb->query( "UPDATE {$wpdb->prefix}pjo_order_meta SET print_batch = NULL, qnap_folder_path = NULL" );
         wp_send_json_success( array( 'start' => PhotoJob_Print_Batch::get_start_number() ) );
     }
 

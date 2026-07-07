@@ -142,4 +142,55 @@ class PhotoJob_Print_Batch {
         $table = $wpdb->prefix . 'pjo_print_batches';
         return $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$table} WHERE number=%s", $number ), ARRAY_A );
     }
+
+    /**
+     * Ostatnie paczki wydruku (do dropdownu „dodaj do istniejącego folderu").
+     *
+     * @return array<array{number,qnap_path,order_ids,file_count,created_at}>
+     */
+    public static function recent( $limit = 25 ) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pjo_print_batches';
+        $limit = max( 1, min( 200, (int) $limit ) );
+        return (array) $wpdb->get_results(
+            "SELECT number, qnap_path, order_ids, file_count, created_at FROM {$table} ORDER BY id DESC LIMIT {$limit}",
+            ARRAY_A
+        );
+    }
+
+    /**
+     * Dopisz do istniejącego rekordu wydruku: scal listę zamówień i dolicz pliki.
+     * Jeśli rekord nie istnieje (np. folder utworzony ręcznie) — utwórz nowy.
+     *
+     * @param string $number      numer wydruku (26ZiNMW4)
+     * @param int[]  $order_ids   zamówienia dorzucone w tej akcji
+     * @param int    $added_files liczba skopiowanych plików
+     * @param string $qnap_path   ścieżka folderu paczki (do zapisu gdy brak rekordu)
+     * @return bool
+     */
+    public static function append_record( $number, $order_ids, $added_files, $qnap_path = '' ) {
+        global $wpdb;
+        $table = $wpdb->prefix . 'pjo_print_batches';
+        $row = self::get_by_number( $number );
+        $new_ids = array_map( 'absint', (array) $order_ids );
+        if ( ! $row ) {
+            return (bool) self::save( array(
+                'number'     => $number,
+                'qnap_path'  => $qnap_path,
+                'order_ids'  => $new_ids,
+                'file_count' => (int) $added_files,
+                'status'     => 'built',
+            ) );
+        }
+        $existing_ids = array_filter( array_map( 'absint', explode( ',', (string) $row['order_ids'] ) ) );
+        $merged = array_values( array_unique( array_merge( $existing_ids, $new_ids ) ) );
+        return false !== $wpdb->update(
+            $table,
+            array(
+                'order_ids'  => implode( ',', $merged ),
+                'file_count' => (int) $row['file_count'] + (int) $added_files,
+            ),
+            array( 'number' => $number )
+        );
+    }
 }
