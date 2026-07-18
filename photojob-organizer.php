@@ -3,7 +3,7 @@
  * Plugin Name: PhotoJob Organizer
  * Plugin URI: https://github.com/mojkadr/PhotoJob-Organizer
  * Description: Narzędzie do organizacji zamówień fotograficznych i generowania raportów księgowych
- * Version: 1.6.10
+ * Version: 1.7.0
  * Author: MójKadr
  * Author URI: https://mojkadr.eu
  * License: GPL v2 or later
@@ -22,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Definicje stałych
-define( 'PHOTOJOB_VERSION', '1.6.10' );
+define( 'PHOTOJOB_VERSION', '1.7.0' );
 define( 'PHOTOJOB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
 define( 'PHOTOJOB_PLUGIN_BASENAME', plugin_basename( __FILE__ ) );
@@ -73,9 +73,6 @@ class PhotoJob_Organizer {
         require_once PHOTOJOB_PLUGIN_DIR . 'includes/class-pjo-duplicates.php';
         require_once PHOTOJOB_PLUGIN_DIR . 'includes/class-pjo-print-batch.php';
 
-        // Auto-etap produkcji po grancie Photo Access (zawsze — grant leci też poza adminem)
-        require_once PHOTOJOB_PLUGIN_DIR . 'includes/class-pjo-access-sync.php';
-
         // Accounting (v1.0.x)
         require_once PHOTOJOB_PLUGIN_DIR . 'includes/class-accounting-table-generator.php';
         require_once PHOTOJOB_PLUGIN_DIR . 'includes/class-excel-exporter.php';
@@ -101,9 +98,6 @@ class PhotoJob_Organizer {
         // Sync customer note z WC do naszej tabeli (cache do dashboardu)
         add_action( 'woocommerce_new_order', array( $this, 'sync_order_meta' ), 10, 1 );
         add_action( 'woocommerce_update_order', array( $this, 'sync_order_meta' ), 10, 1 );
-
-        // Auto-etap produkcji po przyznaniu dostępu przez Photo Access (działa zawsze)
-        PhotoJob_Access_Sync::get_instance();
     }
 
     /**

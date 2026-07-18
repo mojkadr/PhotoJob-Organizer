@@ -51,6 +51,8 @@ class PhotoJob_Activator {
         require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
         $orders_meta = $wpdb->prefix . 'pjo_order_meta';
+        // production_status = legacy: etap produkcji usunięty z UI w 1.7.0 (powielał status WC);
+        // kolumna zostaje w schemacie — dane historyczne nietracone, dbDelta nie dropuje kolumn.
         $sql_orders_meta = "CREATE TABLE {$orders_meta} (
             order_id BIGINT(20) UNSIGNED NOT NULL,
             production_status VARCHAR(50) NOT NULL DEFAULT 'pending',

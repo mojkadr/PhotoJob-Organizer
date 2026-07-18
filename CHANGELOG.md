@@ -1,5 +1,38 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.7.0] — 2026-07-18 — Zamówienia spoza sklepu + porządki w dashboardzie
+
+### Added — zamówienia spoza WooCommerce (żeby nic nie zginęło przy pakowaniu)
+- Przycisk **„➕ Dodaj zamówienie spoza sklepu"** nad tabelą → modal (imię i nazwisko*,
+  email, telefon, kwota, pozycje — jedna na linię z opcjonalnym `x2` na końcu, uwagi).
+- Tworzy **prawdziwe zamówienie WC** (`created_via=pjo-manual`, status „W trakcie realizacji",
+  meta `_pjo_manual_order`), więc działa cała reszta dashboardu: statusy, checkboxy,
+  grupy pakowania, filtry i raport księgowy. W kolumnie Klient badge **„✍ spoza sklepu"**.
+- Pozycje bez produktów WC — Folder Builder poprawnie je pomija (brak meta WAPF = skip),
+  a uwagi/heurystyka FV lecą tym samym `sync_order_meta()` co dla zamówień ze sklepu.
+
+### Removed — kolumna „Etap produkcji" (powielała status WC)
+- Z dashboardu znikają: kolumna Etap produkcji, filtr etapu, przycisk
+  „Zsynchronizuj etapy z Photo Access" oraz automat `PhotoJob_Access_Sync`
+  (plik usunięty; auto-domykanie e-only zamówień było częścią etapu).
+- Kolumna `production_status` w tabeli `pjo_order_meta` **zostaje** (dane historyczne
+  nietracone; dbDelta nie dropuje kolumn).
+
+### Changed — checkbox zaznaczania na skraju lewej strony
+- Checkbox zamówienia = **pierwsza kolumna** tabeli (przed przyciskiem rozwijania),
+  select-all w nagłówku tej kolumny. Koniec z checkboxem wciśniętym w kolumnę Klient.
+
+### Performance
+- **Koniec z N+1**: meta wszystkich zamówień strony pobierane JEDNYM zapytaniem
+  (`fetch_page_meta()`), zamiast `SELECT *` per wiersz (30/stronę) + osobnego zapytania
+  o pack_group przy klastrowaniu. Przy 200/stronę = ~201 zapytań mniej.
+
+### Audyt (bez zmian w kodzie — wynik przeglądu 2026-07-18)
+- `php -l` na wszystkich plikach: **0 błędów**.
+- AJAX-y: komplet `current_user_can` + `check_ajax_referer`; SQL przez `$wpdb->prepare`;
+  output eskejpowany (`esc_*` w PHP, `esc()`/`&lt;` w JS). Hasło QNAP AES-256-CBC
+  kluczem pochodnym od `AUTH_KEY`. Bez zmian.
+
 ## [1.6.10] — 2026-07-07 — Fix śmieciowego folderu formatu (legacy „23cm")
 
 ### Fixed — stary zapis formatu po jednej krawędzi tworzył osobny folder

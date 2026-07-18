@@ -1,11 +1,12 @@
 <?php
 /**
- * PhotoJob_Orders_Dashboard — lista zamówień z 14 kolumnami z Excela "Zestawienie zamówień"
+ * PhotoJob_Orders_Dashboard — lista zamówień z kolumnami z Excela "Zestawienie zamówień"
  *
- * Faza B v1.4.0. Funkcje:
- *  - Lista zamówień WC z dodatkowymi polami z pjo_order_meta (bank, status produkcji, uwagi cached, FV)
- *  - Filtry: zakres dat, status WC, status produkcji, FV, search
- *  - Inline edit (Status WC, Bank, Status produkcji) — AJAX
+ * Funkcje:
+ *  - Lista zamówień WC z dodatkowymi polami z pjo_order_meta (bank, uwagi cached, FV)
+ *  - Zamówienia spoza sklepu (ręczne, created_via=pjo-manual) — telefon/mail/osobiście
+ *  - Filtry: zakres dat, status WC, FV, search
+ *  - Inline edit (Status WC, Bank) — AJAX
  *  - Expand row → line items z meta WAPF "Wydruk odbitki" (typ/rozmiar)
  *  - Pagination 30/strona
  *  - Badge FV 🧾 + tooltip uwag klienta
@@ -42,39 +43,103 @@ class PhotoJob_Orders_Dashboard {
         add_action( 'wp_ajax_pjo_link_pack_group', array( $this, 'ajax_link_pack_group' ) );
         add_action( 'wp_ajax_pjo_unlink_pack_group', array( $this, 'ajax_unlink_pack_group' ) );
         add_action( 'wp_ajax_pjo_regrant_access', array( $this, 'ajax_regrant_access' ) );
-        add_action( 'wp_ajax_pjo_sync_access_stages', array( $this, 'ajax_sync_access_stages' ) );
+        add_action( 'wp_ajax_pjo_add_manual_order', array( $this, 'ajax_add_manual_order' ) );
     }
 
+    /** ============ ZAMÓWIENIA SPOZA SKLEPU (ręczne) ============ */
+
     /**
-     * Backfill: ustaw etap produkcji dla zamówień, które JUŻ mają przyznany dostęp
-     * (post-meta `_ada_access_granted = yes`), a etap jest pusty / pending.
-     * Jednorazowe domknięcie istniejących zamówień (automat działa od teraz na nowe granty).
+     * Dodaj zamówienie spoza WooCommerce (telefon / mail / osobiście) — żeby przy
+     * pakowaniu nic nie zginęło. Tworzy PRAWDZIWE zamówienie WC (created_via=pjo-manual),
+     * więc działa z całą resztą dashboardu: statusy, grupy pakowania, filtry, raporty.
      */
-    public function ajax_sync_access_stages() {
+    public function ajax_add_manual_order() {
         if ( ! current_user_can( 'pjo_manage_orders' ) ) {
             wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
         }
         check_ajax_referer( 'pjo_dashboard', 'nonce' );
-        if ( ! class_exists( 'PhotoJob_Access_Sync' ) ) {
-            wp_send_json_error( array( 'message' => __( 'Moduł synchronizacji niedostępny.', 'photojob-organizer' ) ) );
+        if ( ! function_exists( 'wc_create_order' ) ) {
+            wp_send_json_error( array( 'message' => __( 'WooCommerce nieaktywne.', 'photojob-organizer' ) ) );
         }
-        @set_time_limit( 0 );
-        ignore_user_abort( true );
 
-        global $wpdb;
-        $ids = $wpdb->get_col( $wpdb->prepare(
-            "SELECT post_id FROM {$wpdb->postmeta} WHERE meta_key=%s AND meta_value=%s",
-            PhotoJob_Access_Sync::GRANT_META, 'yes'
-        ) );
-        $sync = PhotoJob_Access_Sync::get_instance();
-        $updated = 0;
-        foreach ( (array) $ids as $oid ) {
-            $oid = (int) $oid;
-            if ( $sync->auto_set_stage_on_grant( $oid ) ) {
-                $updated++;
-            }
+        $name   = sanitize_text_field( wp_unslash( $_POST['client_name'] ?? '' ) );
+        $email  = sanitize_email( wp_unslash( $_POST['client_email'] ?? '' ) );
+        $phone  = sanitize_text_field( wp_unslash( $_POST['client_phone'] ?? '' ) );
+        $amount = (float) str_replace( ',', '.', sanitize_text_field( wp_unslash( $_POST['amount'] ?? '0' ) ) );
+        $items_raw = sanitize_textarea_field( wp_unslash( $_POST['items'] ?? '' ) );
+        $note   = sanitize_textarea_field( wp_unslash( $_POST['note'] ?? '' ) );
+
+        if ( $name === '' ) {
+            wp_send_json_error( array( 'message' => __( 'Podaj imię i nazwisko klienta.', 'photojob-organizer' ) ) );
         }
-        wp_send_json_success( array( 'scanned' => count( (array) $ids ), 'updated' => $updated ) );
+        if ( $amount < 0 || $amount > 1000000 ) {
+            wp_send_json_error( array( 'message' => __( 'Nieprawidłowa kwota.', 'photojob-organizer' ) ) );
+        }
+
+        $order = wc_create_order( array(
+            'status'      => 'processing',
+            'created_via' => 'pjo-manual',
+        ) );
+        if ( is_wp_error( $order ) ) {
+            wp_send_json_error( array( 'message' => $order->get_error_message() ) );
+        }
+
+        // Imię/nazwisko: ostatnie słowo = nazwisko, reszta = imię.
+        $parts = preg_split( '/\s+/u', $name );
+        $last  = count( $parts ) > 1 ? array_pop( $parts ) : '';
+        $order->set_billing_first_name( implode( ' ', $parts ) );
+        $order->set_billing_last_name( $last );
+        if ( $email !== '' ) {
+            $order->set_billing_email( $email );
+        }
+        if ( $phone !== '' ) {
+            $order->set_billing_phone( $phone );
+        }
+        if ( $note !== '' ) {
+            $order->set_customer_note( $note );
+        }
+
+        // Pozycje: jedna linia = pozycja, opcjonalnie " x2" na końcu = ilość.
+        $added_items = 0;
+        foreach ( preg_split( '/\r\n|\r|\n/', $items_raw ) as $line ) {
+            $line = trim( $line );
+            if ( $line === '' ) {
+                continue;
+            }
+            $qty = 1;
+            if ( preg_match( '/^(.*?)\s*[x×]\s*(\d{1,3})$/u', $line, $m ) ) {
+                $line = trim( $m[1] );
+                $qty  = max( 1, (int) $m[2] );
+            }
+            if ( $line === '' ) {
+                continue;
+            }
+            $item = new WC_Order_Item_Product();
+            $item->set_name( $line );
+            $item->set_quantity( $qty );
+            $order->add_item( $item );
+            $added_items++;
+        }
+
+        $order->set_total( $amount );
+        $order->update_meta_data( '_pjo_manual_order', 'yes' );
+        $order->save();
+        $order->add_order_note( sprintf(
+            /* translators: %s = login użytkownika */
+            __( '[PJO] Zamówienie spoza sklepu dodane ręcznie przez %s.', 'photojob-organizer' ),
+            wp_get_current_user()->user_login
+        ) );
+
+        // Cache uwag + heurystyka FV do pjo_order_meta (ten sam mechanizm co dla zamówień WC).
+        if ( class_exists( 'PhotoJob_Organizer' ) ) {
+            PhotoJob_Organizer::get_instance()->sync_order_meta( $order->get_id() );
+        }
+
+        wp_send_json_success( array(
+            'order_id' => $order->get_id(),
+            'items'    => $added_items,
+            'message'  => sprintf( __( 'Dodano zamówienie #%d.', 'photojob-organizer' ), $order->get_id() ),
+        ) );
     }
 
     /** ============ RE-GRANT DOSTĘPU (Photo Access) ============ */
@@ -348,33 +413,6 @@ class PhotoJob_Orders_Dashboard {
                 wp_send_json_success( array( 'value' => $bank ) );
                 break;
 
-            case 'production_status':
-                $allowed_ps = self::production_statuses_all();
-                $ps = sanitize_key( $value );
-                if ( ! in_array( $ps, $allowed_ps, true ) ) {
-                    wp_send_json_error( array( 'message' => 'Invalid production status' ) );
-                }
-                $existing = $wpdb->get_var( $wpdb->prepare( "SELECT order_id FROM {$meta_table} WHERE order_id=%d", $order_id ) );
-                if ( $existing ) {
-                    $wpdb->update( $meta_table, array( 'production_status' => $ps ), array( 'order_id' => $order_id ) );
-                } else {
-                    $wpdb->insert( $meta_table, array( 'order_id' => $order_id, 'production_status' => $ps ) );
-                }
-                // #2: zamówienie TYLKO z wersjami elektronicznymi + "Link wysłany" → zamknij od razu (Zrealizowane).
-                $wc_completed = false;
-                if ( $ps === 'link_sent' && self::order_is_electronic_only( $order ) && $order->get_status() !== 'completed' ) {
-                    $order->update_status( 'completed', __( '[PJO] Wersja elektroniczna — link wysłany do klienta.', 'photojob-organizer' ) );
-                    $wc_completed = true;
-                }
-                wp_send_json_success( array(
-                    'value'        => $ps,
-                    'label'        => self::production_status_label( $ps ),
-                    'wc_completed' => $wc_completed,
-                    'wc_status'    => 'wc-' . $order->get_status(),
-                    'wc_label'     => wc_get_order_status_name( 'wc-' . $order->get_status() ),
-                ) );
-                break;
-
             default:
                 wp_send_json_error( array( 'message' => 'Unknown field' ) );
         }
@@ -439,34 +477,6 @@ class PhotoJob_Orders_Dashboard {
         wp_send_json_success( array( 'items' => $items ) );
     }
 
-    /** ============ HELPERS ============ */
-
-    public static function production_status_label( $status ) {
-        $map = array(
-            'pending'           => __( '⏳ Oczekuje', 'photojob-organizer' ),
-            'sent_to_lab'       => __( '📤 Wysłane do labu', 'photojob-organizer' ),
-            'received_from_lab' => __( '📥 Przyszły z labu', 'photojob-organizer' ),
-            'incomplete'        => __( '⚠ Niekompletne', 'photojob-organizer' ),
-            'ready_to_pack'     => __( '📦 Do spakowania', 'photojob-organizer' ),
-            'shipped'           => __( '✅ Wysłane do klienta', 'photojob-organizer' ),
-            'link_sent'         => __( '📧 Link wysłany', 'photojob-organizer' ),
-        );
-        return $map[ $status ] ?? $status;
-    }
-
-    public static function production_statuses_all() {
-        return array( 'pending', 'sent_to_lab', 'received_from_lab', 'incomplete', 'ready_to_pack', 'shipped', 'link_sent' );
-    }
-
-    /**
-     * #2: Czy zamówienie zawiera WYŁĄCZNIE wersje elektroniczne (brak odbitek do druku)?
-     * Kanoniczna logika w PhotoJob_Access_Sync (zawsze ładowana) — tu delegujemy,
-     * żeby heurystyka nie rozjechała się w dwóch miejscach.
-     */
-    public static function order_is_electronic_only( $order ) {
-        return PhotoJob_Access_Sync::is_electronic_only( $order );
-    }
-
     /** ============ RENDER ============ */
 
     public function render_page() {
@@ -480,7 +490,6 @@ class PhotoJob_Orders_Dashboard {
             'date_from'         => sanitize_text_field( $_GET['date_from'] ?? date( 'Y-m-01' ) ),
             'date_to'           => sanitize_text_field( $_GET['date_to'] ?? date( 'Y-m-d' ) ),
             'status'            => sanitize_text_field( $_GET['status'] ?? '' ),
-            'production_status' => sanitize_text_field( $_GET['production_status'] ?? '' ),
             'wants_invoice'     => sanitize_text_field( $_GET['wants_invoice'] ?? '' ),
             'search'            => sanitize_text_field( $_GET['search'] ?? '' ),
             'per_page'          => max( 10, min( 200, absint( $_GET['per_page'] ?? self::PER_PAGE_DEFAULT ) ) ),
@@ -494,11 +503,12 @@ class PhotoJob_Orders_Dashboard {
 
         $banks = get_option( 'pjo_settings_banks', array() );
         $wc_statuses = wc_get_order_statuses();
-        $prod_statuses = self::production_statuses_all();
+        // Meta wszystkich zamówień strony JEDNYM zapytaniem (koniec z N+1 per wiersz).
+        $metas = $this->fetch_page_meta( $orders );
         // #3: klastry dubli (mail/nazwisko) — tylko dla zarządzających.
         $clusters = ( ! $is_worker && class_exists( 'PhotoJob_Duplicates' ) ) ? PhotoJob_Duplicates::get_clusters() : array();
         // #3: ułóż duble i grupy pakowania obok siebie (ułatwia pakowanie).
-        $orders = $this->cluster_adjacent_orders( $orders, $clusters );
+        $orders = $this->cluster_adjacent_orders( $orders, $clusters, $metas );
         ?>
         <div class="wrap pjo-dashboard">
             <h1><?php _e( 'Zamówienia', 'photojob-organizer' ); ?>
@@ -519,14 +529,6 @@ class PhotoJob_Orders_Dashboard {
                             <option value=""><?php _e( '— wszystkie —', 'photojob-organizer' ); ?></option>
                             <?php foreach ( $wc_statuses as $key => $label ) : ?>
                                 <option value="<?php echo esc_attr( $key ); ?>" <?php selected( $f['status'], $key ); ?>><?php echo esc_html( $label ); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                    </label>
-                    <label><strong><?php _e( 'Etap produkcji:', 'photojob-organizer' ); ?></strong><br>
-                        <select name="production_status">
-                            <option value=""><?php _e( '— wszystkie —', 'photojob-organizer' ); ?></option>
-                            <?php foreach ( $prod_statuses as $ps ) : ?>
-                                <option value="<?php echo esc_attr( $ps ); ?>" <?php selected( $f['production_status'], $ps ); ?>><?php echo esc_html( self::production_status_label( $ps ) ); ?></option>
                             <?php endforeach; ?>
                         </select>
                     </label>
@@ -552,9 +554,30 @@ class PhotoJob_Orders_Dashboard {
 
             <?php if ( ! $is_worker ) : ?>
             <div style="margin:8px 0;">
-                <button type="button" class="button" id="pjo-sync-stages">🔄 <?php _e( 'Zsynchronizuj etapy z Photo Access', 'photojob-organizer' ); ?></button>
-                <span id="pjo-sync-stages-result" style="margin-left:8px;font-size:12px;"></span>
-                <span class="description" style="font-size:11px;margin-left:6px;"><?php _e( 'Ustawia etap (📧 Link wysłany / ⚠ Niekompletne) dla zamówień, które już mają przyznany dostęp do zdjęć.', 'photojob-organizer' ); ?></span>
+                <button type="button" class="button" id="pjo-add-manual">➕ <?php _e( 'Dodaj zamówienie spoza sklepu', 'photojob-organizer' ); ?></button>
+                <span class="description" style="font-size:11px;margin-left:6px;"><?php _e( 'Telefon / mail / osobiście — trafia na listę jak każde inne, żeby nie zginęło przy pakowaniu.', 'photojob-organizer' ); ?></span>
+            </div>
+            <div id="pjo-manual-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100001;align-items:center;justify-content:center;">
+                <div style="background:#fff;border-radius:6px;padding:20px 24px;width:440px;max-width:92vw;max-height:90vh;overflow:auto;box-shadow:0 8px 40px rgba(0,0,0,.35);">
+                    <h2 style="margin:0 0 12px;">➕ <?php _e( 'Zamówienie spoza sklepu', 'photojob-organizer' ); ?></h2>
+                    <p style="margin:4px 0;"><label><strong><?php _e( 'Imię i nazwisko *', 'photojob-organizer' ); ?></strong><br>
+                        <input type="text" id="pjo-m-name" style="width:100%;"></label></p>
+                    <p style="margin:4px 0;"><label><?php _e( 'Email', 'photojob-organizer' ); ?><br>
+                        <input type="email" id="pjo-m-email" style="width:100%;"></label></p>
+                    <p style="margin:4px 0;"><label><?php _e( 'Telefon', 'photojob-organizer' ); ?><br>
+                        <input type="text" id="pjo-m-phone" style="width:100%;"></label></p>
+                    <p style="margin:4px 0;"><label><?php _e( 'Kwota (zł)', 'photojob-organizer' ); ?><br>
+                        <input type="text" id="pjo-m-amount" placeholder="0" style="width:120px;"></label></p>
+                    <p style="margin:4px 0;"><label><?php _e( 'Pozycje (jedna na linię, ilość jako „x2" na końcu)', 'photojob-organizer' ); ?><br>
+                        <textarea id="pjo-m-items" rows="4" style="width:100%;" placeholder="<?php esc_attr_e( "Odbitka 15x23 Zosia x3\nFolio BOX Kacper", 'photojob-organizer' ); ?>"></textarea></label></p>
+                    <p style="margin:4px 0;"><label><?php _e( 'Uwagi', 'photojob-organizer' ); ?><br>
+                        <textarea id="pjo-m-note" rows="2" style="width:100%;"></textarea></label></p>
+                    <p style="margin:14px 0 0;display:flex;gap:10px;align-items:center;">
+                        <button type="button" class="button button-primary" id="pjo-m-save"><?php _e( 'Dodaj zamówienie', 'photojob-organizer' ); ?></button>
+                        <button type="button" class="button" id="pjo-m-cancel"><?php _e( 'Anuluj', 'photojob-organizer' ); ?></button>
+                        <span id="pjo-m-result" style="font-size:12px;"></span>
+                    </p>
+                </div>
             </div>
             <?php $recent_batches = class_exists( 'PhotoJob_Print_Batch' ) ? PhotoJob_Print_Batch::recent( 25 ) : array(); ?>
             <div id="pjo-pack-bar" style="display:none;background:#fff;border:1px solid #c3c4c7;padding:8px 12px;margin:10px 0;border-radius:4px;line-height:2;">
@@ -584,29 +607,28 @@ class PhotoJob_Orders_Dashboard {
 
             <table class="wp-list-table widefat striped pjo-orders-table">
                 <thead><tr>
+                    <?php if ( ! $is_worker ) : ?>
+                        <th style="width:28px;"><input type="checkbox" id="pjo-select-all" title="<?php esc_attr_e( 'Zaznacz/odznacz wszystkie na stronie', 'photojob-organizer' ); ?>"></th>
+                    <?php endif; ?>
                     <th style="width:30px;"></th>
                     <th style="width:90px;"><?php _e( 'Data', 'photojob-organizer' ); ?></th>
                     <th style="width:80px;"><?php _e( 'Nr', 'photojob-organizer' ); ?></th>
-                    <th>
-                        <?php if ( ! $is_worker ) : ?><input type="checkbox" id="pjo-select-all" title="<?php esc_attr_e( 'Zaznacz/odznacz wszystkie na stronie', 'photojob-organizer' ); ?>" style="margin-right:4px;vertical-align:middle;"><?php endif; ?>
-                        <?php _e( 'Klient', 'photojob-organizer' ); ?>
-                    </th>
+                    <th><?php _e( 'Klient', 'photojob-organizer' ); ?></th>
                     <?php if ( ! $is_worker ) : ?>
                         <th><?php _e( 'Email / Tel', 'photojob-organizer' ); ?></th>
                         <th style="width:90px;"><?php _e( 'Kwota', 'photojob-organizer' ); ?></th>
                         <th style="width:140px;"><?php _e( 'Status WC', 'photojob-organizer' ); ?></th>
                         <th style="width:140px;"><?php _e( 'Bank', 'photojob-organizer' ); ?></th>
                     <?php endif; ?>
-                    <th style="width:180px;"><?php _e( 'Etap produkcji', 'photojob-organizer' ); ?></th>
                     <th style="width:120px;"><?php _e( 'Uwagi / FV', 'photojob-organizer' ); ?></th>
                     <th style="width:80px;"><?php _e( 'Akcje', 'photojob-organizer' ); ?></th>
                 </tr></thead>
                 <tbody>
                 <?php if ( empty( $orders ) ) : ?>
-                    <tr><td colspan="11"><em><?php _e( 'Brak zamówień w wybranym zakresie.', 'photojob-organizer' ); ?></em></td></tr>
+                    <tr><td colspan="<?php echo $is_worker ? 6 : 11; ?>"><em><?php _e( 'Brak zamówień w wybranym zakresie.', 'photojob-organizer' ); ?></em></td></tr>
                 <?php else :
                     foreach ( $orders as $order ) :
-                        $this->render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses, $clusters );
+                        $this->render_order_row( $order, $is_worker, $banks, $wc_statuses, $clusters, $metas );
                     endforeach;
                 endif; ?>
                 </tbody>
@@ -658,6 +680,7 @@ class PhotoJob_Orders_Dashboard {
         .pjo-dup-badge { background:#f59f00; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; cursor:help; margin-left:4px; white-space:nowrap; }
         .pjo-pack-badge { background:#2271b1; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; cursor:pointer; margin-left:4px; white-space:nowrap; }
         .pjo-batch-badge { background:#5a3e8e; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; white-space:nowrap; }
+        .pjo-manual-badge { background:#0e7490; color:#fff; padding:1px 6px; border-radius:3px; font-size:11px; cursor:help; margin-left:4px; white-space:nowrap; }
         .pjo-line-item img.pjo-thumb { cursor:zoom-in; transition:transform .08s; }
         .pjo-line-item img.pjo-thumb:hover { transform:scale(1.05); border-color:#2271b1; }
         .pjo-lightbox { position:fixed; inset:0; background:rgba(0,0,0,.82); z-index:100000; align-items:center; justify-content:center; cursor:zoom-out; }
@@ -715,7 +738,7 @@ class PhotoJob_Orders_Dashboard {
                 });
             });
 
-            // Inline edit (status, bank, production_status)
+            // Inline edit (status, bank)
             document.querySelectorAll('.pjo-inline-edit').forEach(function(sel) {
                 sel.addEventListener('change', function() {
                     var orderId = sel.getAttribute('data-order');
@@ -746,14 +769,6 @@ class PhotoJob_Orders_Dashboard {
                                 var tr = sel.closest('tr');
                                 tr.className = tr.className.replace(/status-wc-\S+/g, '').trim();
                                 tr.classList.add('status-' + value);
-                            }
-                            // #2: "Link wysłany" zamknął e-only zamówienie → odśwież status WC w wierszu
-                            if (field === 'production_status' && j.data && j.data.wc_completed) {
-                                var tr2 = sel.closest('tr');
-                                var statusSel = tr2.querySelector('select[data-field="status"]');
-                                if (statusSel) { statusSel.value = j.data.wc_status; statusSel.setAttribute('data-original', j.data.wc_status); }
-                                tr2.className = tr2.className.replace(/status-wc-\S+/g, '').trim();
-                                tr2.classList.add('status-' + j.data.wc_status);
                             }
                         })
                         .catch(function(e) { sel.disabled = false; alert(e.message); });
@@ -1010,25 +1025,41 @@ class PhotoJob_Orders_Dashboard {
                 loadBuildPreview(orderId, row.querySelector('.pjo-build-content'), true);
             });
 
-            // Backfill: synchronizacja etapów z Photo Access (jednorazowo dla istniejących)
-            var syncBtn = document.getElementById('pjo-sync-stages');
-            if (syncBtn) syncBtn.addEventListener('click', function() {
-                if (!confirm('Ustawić etap produkcji (Link wysłany / Niekompletne) dla wszystkich zamówień z już przyznanym dostępem?\nNie cofa ręcznie zaawansowanych etapów.')) return;
-                var res = document.getElementById('pjo-sync-stages-result');
-                syncBtn.disabled = true; res.textContent = '⏳ Synchronizuję…';
-                var fd = new FormData();
-                fd.append('action', 'pjo_sync_access_stages');
-                fd.append('nonce', nonce);
-                fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
-                    .then(function(r){ return r.json(); })
-                    .then(function(j) {
-                        syncBtn.disabled = false;
-                        if (!j.success) { res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
-                        res.innerHTML = '✅ Zaktualizowano <strong>' + j.data.updated + '</strong> z ' + j.data.scanned + ' (z dostępem) — odświeżam…';
-                        setTimeout(function(){ location.reload(); }, 1000);
-                    })
-                    .catch(function(e){ syncBtn.disabled = false; res.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
-            });
+            // ===== Zamówienie spoza sklepu (modal) =====
+            var mModal = document.getElementById('pjo-manual-modal');
+            var mBtn = document.getElementById('pjo-add-manual');
+            if (mBtn && mModal) {
+                var mSave = document.getElementById('pjo-m-save');
+                var mRes = document.getElementById('pjo-m-result');
+                function mOpen(){ mModal.style.display = 'flex'; document.getElementById('pjo-m-name').focus(); }
+                function mClose(){ mModal.style.display = 'none'; mRes.textContent = ''; }
+                mBtn.addEventListener('click', mOpen);
+                document.getElementById('pjo-m-cancel').addEventListener('click', mClose);
+                mModal.addEventListener('click', function(e){ if (e.target === mModal) mClose(); });
+                mSave.addEventListener('click', function() {
+                    var name = document.getElementById('pjo-m-name').value.trim();
+                    if (!name) { mRes.innerHTML = '<span class="pjo-st-error">Podaj imię i nazwisko.</span>'; return; }
+                    mSave.disabled = true; mRes.textContent = '⏳ Dodaję…';
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_add_manual_order');
+                    fd.append('nonce', nonce);
+                    fd.append('client_name', name);
+                    fd.append('client_email', document.getElementById('pjo-m-email').value.trim());
+                    fd.append('client_phone', document.getElementById('pjo-m-phone').value.trim());
+                    fd.append('amount', document.getElementById('pjo-m-amount').value.trim() || '0');
+                    fd.append('items', document.getElementById('pjo-m-items').value);
+                    fd.append('note', document.getElementById('pjo-m-note').value);
+                    fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j) {
+                            mSave.disabled = false;
+                            if (!j.success) { mRes.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                            mRes.innerHTML = '✅ ' + esc(j.data.message) + ' — odświeżam…';
+                            setTimeout(function(){ location.reload(); }, 900);
+                        })
+                        .catch(function(e){ mSave.disabled = false; mRes.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
+                });
+            }
 
             // Re-grant dostępu (Photo Access) — przycisk per zamówienie
             document.querySelectorAll('.pjo-regrant-btn').forEach(function(btn) {
@@ -1091,27 +1122,17 @@ class PhotoJob_Orders_Dashboard {
      *
      * @param WC_Order[] $orders
      * @param array      $clusters  mapa order_id => ['siblings'=>[...]]
+     * @param array      $metas     mapa order_id => wiersz pjo_order_meta (z fetch_page_meta)
      * @return WC_Order[]
      */
-    private function cluster_adjacent_orders( $orders, $clusters ) {
+    private function cluster_adjacent_orders( $orders, $clusters, $metas = array() ) {
         if ( count( $orders ) < 2 ) {
             return $orders;
         }
-        $ids = array();
-        foreach ( $orders as $o ) {
-            $ids[] = $o->get_id();
-        }
-        // pack_group dla zamówień z bieżącej strony — jednym zapytaniem.
-        global $wpdb;
-        $table = $wpdb->prefix . 'pjo_order_meta';
-        $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-        $rows = $wpdb->get_results( $wpdb->prepare(
-            "SELECT order_id, pack_group FROM {$table} WHERE order_id IN ({$placeholders})", $ids
-        ), ARRAY_A );
         $pack = array();
-        foreach ( (array) $rows as $r ) {
-            if ( ! empty( $r['pack_group'] ) ) {
-                $pack[ (int) $r['order_id'] ] = $r['pack_group'];
+        foreach ( $metas as $oid => $m ) {
+            if ( ! empty( $m['pack_group'] ) ) {
+                $pack[ (int) $oid ] = $m['pack_group'];
             }
         }
 
@@ -1154,19 +1175,44 @@ class PhotoJob_Orders_Dashboard {
         return $result;
     }
 
-    private function render_order_row( $order, $is_worker, $banks, $wc_statuses, $prod_statuses, $clusters = array() ) {
+    /**
+     * Pobierz wiersze pjo_order_meta dla WSZYSTKICH zamówień strony jednym zapytaniem
+     * (zamiast SELECT per wiersz przy renderze).
+     *
+     * @param WC_Order[] $orders
+     * @return array  mapa order_id => wiersz meta (ARRAY_A)
+     */
+    private function fetch_page_meta( $orders ) {
+        if ( empty( $orders ) ) {
+            return array();
+        }
+        $ids = array();
+        foreach ( $orders as $o ) {
+            $ids[] = $o->get_id();
+        }
         global $wpdb;
-        $meta_table = $wpdb->prefix . 'pjo_order_meta';
+        $table = $wpdb->prefix . 'pjo_order_meta';
+        $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+        $rows = $wpdb->get_results( $wpdb->prepare(
+            "SELECT * FROM {$table} WHERE order_id IN ({$placeholders})", $ids
+        ), ARRAY_A );
+        $map = array();
+        foreach ( (array) $rows as $r ) {
+            $map[ (int) $r['order_id'] ] = $r;
+        }
+        return $map;
+    }
+
+    private function render_order_row( $order, $is_worker, $banks, $wc_statuses, $clusters = array(), $metas = array() ) {
         $oid = $order->get_id();
-        $meta = $wpdb->get_row( $wpdb->prepare( "SELECT * FROM {$meta_table} WHERE order_id=%d", $oid ), ARRAY_A );
+        $meta = $metas[ $oid ] ?? array();
         $pack_group = $meta['pack_group'] ?? '';
         $print_batch = $meta['print_batch'] ?? '';
         $dup = $clusters[ $oid ] ?? null;
+        $is_manual = $order->get_meta( '_pjo_manual_order' ) === 'yes';
 
         $status = 'wc-' . $order->get_status();
-        $status_label = wc_get_order_status_name( $status );
         $bank = $meta['bank_account'] ?? '';
-        $prod_status = $meta['production_status'] ?? 'pending';
         $customer_note = $meta['customer_note_cached'] ?? $order->get_customer_note();
         $wants_invoice = (int) ( $meta['wants_invoice'] ?? 0 );
 
@@ -1180,14 +1226,17 @@ class PhotoJob_Orders_Dashboard {
         $date = $order->get_date_created() ? $order->get_date_created()->date_i18n( 'Y-m-d' ) : '—';
         ?>
         <tr class="status-<?php echo esc_attr( $status ); ?>">
+            <?php if ( ! $is_worker ) : ?>
+                <td><input type="checkbox" class="pjo-pack-cb" value="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Zaznacz zamówienie (folder druku / grupa pakowania)', 'photojob-organizer' ); ?>"></td>
+            <?php endif; ?>
             <td><button class="pjo-expand-btn" data-order="<?php echo esc_attr( $oid ); ?>" title="<?php esc_attr_e( 'Pokaż produkty zamówienia', 'photojob-organizer' ); ?>">+</button></td>
             <td><?php echo esc_html( $date ); ?></td>
             <td><a href="<?php echo esc_url( admin_url( 'admin.php?page=wc-orders&action=edit&id=' . $oid ) ); ?>" target="_blank">#<?php echo esc_html( $oid ); ?></a></td>
             <td>
-                <?php if ( ! $is_worker ) : ?>
-                    <input type="checkbox" class="pjo-pack-cb" value="<?php echo esc_attr( $oid ); ?>" style="margin-right:4px;" title="<?php esc_attr_e( 'Zaznacz do połączenia', 'photojob-organizer' ); ?>">
-                <?php endif; ?>
                 <?php echo esc_html( $client ); ?>
+                <?php if ( $is_manual ) : ?>
+                    <span class="pjo-manual-badge" title="<?php esc_attr_e( 'Zamówienie dodane ręcznie (spoza sklepu WWW)', 'photojob-organizer' ); ?>">✍ <?php _e( 'spoza sklepu', 'photojob-organizer' ); ?></span>
+                <?php endif; ?>
                 <?php if ( $dup ) : ?>
                     <?php
                     $sib = array_map( function( $s ) { return '#' . $s; }, (array) $dup['siblings'] );
@@ -1226,13 +1275,6 @@ class PhotoJob_Orders_Dashboard {
                 </td>
             <?php endif; ?>
             <td>
-                <select class="pjo-inline-edit" data-order="<?php echo esc_attr( $oid ); ?>" data-field="production_status" data-original="<?php echo esc_attr( $prod_status ); ?>">
-                    <?php foreach ( $prod_statuses as $ps ) : ?>
-                        <option value="<?php echo esc_attr( $ps ); ?>" <?php selected( $prod_status, $ps ); ?>><?php echo esc_html( self::production_status_label( $ps ) ); ?></option>
-                    <?php endforeach; ?>
-                </select>
-            </td>
-            <td>
                 <?php if ( $wants_invoice ) : ?>
                     <span class="pjo-fv-badge" title="<?php echo esc_attr( $customer_note ); ?>">🧾 FV</span>
                 <?php endif; ?>
@@ -1257,7 +1299,7 @@ class PhotoJob_Orders_Dashboard {
             </td>
         </tr>
         <tr id="pjo-items-<?php echo esc_attr( $oid ); ?>" class="pjo-line-items-row" style="display:none;">
-            <td colspan="<?php echo $is_worker ? 6 : 11; ?>">
+            <td colspan="<?php echo $is_worker ? 6 : 11; ?>"><!-- worker: 6 kolumn (bez cb/email/kwoty/statusu/banku), pełny widok: 11 -->
                 <div class="pjo-line-items-content" data-loaded="0"></div>
             </td>
         </tr>
