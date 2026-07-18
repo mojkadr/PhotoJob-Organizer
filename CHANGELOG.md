@@ -1,5 +1,18 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.7.2] — 2026-07-18 — Format odbitki 10x15 + formaty edytowalne w ustawieniach
+
+### Added
+- **Format `10x15`** w domyślnej liście formatów odbitek (klient zamawiający tylko 10x15).
+- **Pole „Formaty odbitek" w Ustawienia → QNAP** — lista po przecinku, koniec z filtrem/kodem
+  przy kolejnym formacie. Parser normalizuje wpisy do `NxM` („10 x 15 cm" → `10x15`),
+  odrzuca śmieci i duplikaty; puste pole = domyślne z kodu (10x15, 15x23, 20x30).
+
+### Uwaga (legacy „po jednej krawędzi")
+- Scalanie starych etykiet jednokrawędziowych działa dalej: `10`→10x15, `23`→15x23,
+  `30`→20x30. Krawędź `15` jest teraz niejednoznaczna (10x15 i 15x23) → celowo
+  NIE jest zgadywana (zachowanie bezpieczne, bez zmian dla realnych danych).
+
 ## [1.7.1] — 2026-07-18 — Zamówienia spoza sklepu: picker zdjęć z magazynu QNAP
 
 ### Changed — pozycje wybierane z dysku zamiast wolnego tekstu

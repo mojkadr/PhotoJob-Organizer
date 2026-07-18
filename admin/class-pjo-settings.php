@@ -105,6 +105,7 @@ class PhotoJob_Settings {
             'source_path'      => sanitize_text_field( $_POST['qnap_source_path'] ?? '' ),
             'print_build_path' => sanitize_text_field( $_POST['qnap_print_build_path'] ?? '' ),
             'password_const'   => sanitize_text_field( $_POST['qnap_password_const'] ?? '' ),
+            'print_formats'    => self::parse_print_formats( $_POST['qnap_print_formats'] ?? '' ),
         );
         // Hasło — jeśli user wpisał nowe, szyfruj i zapisz. Jeśli puste — zachowaj stare.
         $new_password = $_POST['qnap_password'] ?? '';
@@ -119,6 +120,23 @@ class PhotoJob_Settings {
         if ( isset( $_POST['qnap_print_start_number'] ) && class_exists( 'PhotoJob_Print_Batch' ) ) {
             PhotoJob_Print_Batch::set_start_number( absint( $_POST['qnap_print_start_number'] ) );
         }
+    }
+
+    /**
+     * Sparsuj listę formatów odbitek z pola tekstowego (przecinki/średniki/nowe linie)
+     * do znormalizowanych "NxM". Śmieci odpadają, duplikaty scalone.
+     *
+     * @param string $raw
+     * @return string[]  np. ['10x15','15x23','20x30'] (pusta tablica = fallback z kodu)
+     */
+    public static function parse_print_formats( $raw ) {
+        $out = array();
+        foreach ( preg_split( '/[,;\r\n]+/', (string) wp_unslash( $raw ) ) as $part ) {
+            if ( preg_match( '/(\d+)\s*[x×]\s*(\d+)/iu', $part, $m ) ) {
+                $out[ $m[1] . 'x' . $m[2] ] = true;
+            }
+        }
+        return array_keys( $out );
     }
 
     private function save_labels() {
@@ -705,6 +723,10 @@ class PhotoJob_Settings {
             <tr><th><label for="qnap_print_build_path"><?php _e( 'Ścieżka budowania druku', 'photojob-organizer' ); ?></label></th>
                 <td><input type="text" class="regular-text" id="qnap_print_build_path" name="qnap_print_build_path" value="<?php echo esc_attr( $q['print_build_path'] ); ?>" placeholder="/MójKadr/Druk">
                     <p class="description"><?php _e( 'Cel — Folder Builder tworzy tu strukturę <code>{NUMER}/{Typ}/{Rozmiar}/…</code> i kopiuje przemianowane pliki do druku.', 'photojob-organizer' ); ?></p>
+                </td></tr>
+            <tr><th><label for="qnap_print_formats"><?php _e( 'Formaty odbitek', 'photojob-organizer' ); ?></label></th>
+                <td><input type="text" class="regular-text" id="qnap_print_formats" name="qnap_print_formats" value="<?php echo esc_attr( implode( ', ', PhotoJob_Folder_Builder::known_formats() ) ); ?>" placeholder="10x15, 15x23, 20x30">
+                    <p class="description"><?php _e( 'Znane formaty odbitek, po przecinku. Używane w pickerze zdjęć zamówień spoza sklepu oraz do scalania starych etykiet po jednej krawędzi (np. „23cm" → 15x23). Pusto = domyślne z kodu (10x15, 15x23, 20x30).', 'photojob-organizer' ); ?></p>
                 </td></tr>
             <tr><th><label for="qnap_print_start_number"><?php _e( 'Numer startowy wydruku', 'photojob-organizer' ); ?></label></th>
                 <td>

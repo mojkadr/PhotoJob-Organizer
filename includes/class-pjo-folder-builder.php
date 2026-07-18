@@ -705,7 +705,7 @@ class PhotoJob_Folder_Builder {
         $opt = get_option( 'pjo_settings_qnap', array() );
         $formats = ( ! empty( $opt['print_formats'] ) && is_array( $opt['print_formats'] ) )
             ? $opt['print_formats']
-            : array( '15x23', '20x30' );
+            : array( '10x15', '15x23', '20x30' );
         return (array) apply_filters( 'pjo_print_formats', $formats );
     }
 
