@@ -1,5 +1,20 @@
 # CHANGELOG — PhotoJob Organizer
 
+## [1.7.1] — 2026-07-18 — Zamówienia spoza sklepu: picker zdjęć z magazynu QNAP
+
+### Changed — pozycje wybierane z dysku zamiast wolnego tekstu
+- Textarea „Pozycje" zastąpiona **przeglądarką magazynu zdjęć (QNAP)** w modalu:
+  breadcrumb + drill-down po folderach sesji, zdjęcia z przyciskiem „➕ Dodaj";
+  wybrane lądują w tabelce z **formatem** (lista znanych formatów odbitek,
+  `pjo_settings_qnap['print_formats']` / filtr `pjo_print_formats`) i **ilością** per zdjęcie.
+- Pozycja zapisuje się z meta w konwencji WAPF ze sklepu (`Wydruk odbitki` = format,
+  `Ilość dodatkowych odbitek {format}` = ilość−1), a nazwa pozycji = nazwa pliku bez
+  rozszerzenia → **Folder Builder dopasuje pliki źródłowe i policzy kopie identycznie
+  jak przy zamówieniach ze sklepu** (wie skąd brać pliki przy budowaniu folderu druku).
+- Nowy AJAX `pjo_manual_browse` (cap `pjo_manage_orders` + nonce): listuje foldery
+  i obrazy wskazanej ścieżki; ścieżka **przycinana do magazynu źródłowego** (`source_root`,
+  blokada `..`) — nie da się wyjść wyżej po NAS-ie. `known_formats()` upubliczniony.
+
 ## [1.7.0] — 2026-07-18 — Zamówienia spoza sklepu + porządki w dashboardzie
 
 ### Added — zamówienia spoza WooCommerce (żeby nic nie zginęło przy pakowaniu)

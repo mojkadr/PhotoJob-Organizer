@@ -44,6 +44,66 @@ class PhotoJob_Orders_Dashboard {
         add_action( 'wp_ajax_pjo_unlink_pack_group', array( $this, 'ajax_unlink_pack_group' ) );
         add_action( 'wp_ajax_pjo_regrant_access', array( $this, 'ajax_regrant_access' ) );
         add_action( 'wp_ajax_pjo_add_manual_order', array( $this, 'ajax_add_manual_order' ) );
+        add_action( 'wp_ajax_pjo_manual_browse', array( $this, 'ajax_manual_browse' ) );
+    }
+
+    /**
+     * Przeglądarka magazynu zdjęć (QNAP) dla modala zamówienia spoza sklepu.
+     * Zwraca foldery + pliki-obrazy wskazanej ścieżki. Ścieżka jest PRZYCINANA
+     * do magazynu źródłowego (source_root) — nie da się wyjść wyżej po NAS-ie.
+     */
+    public function ajax_manual_browse() {
+        if ( ! current_user_can( 'pjo_manage_orders' ) ) {
+            wp_send_json_error( array( 'message' => __( 'Brak uprawnień.', 'photojob-organizer' ) ) );
+        }
+        check_ajax_referer( 'pjo_dashboard', 'nonce' );
+
+        $root = PhotoJob_Folder_Builder::source_root();
+        $path = sanitize_text_field( wp_unslash( $_POST['path'] ?? '' ) );
+        $path = '/' . trim( $path, '/' );
+        // Bez wychodzenia poza magazyn: '..' i ścieżki spoza roota → root.
+        if ( strpos( $path, '..' ) !== false || ( $path !== $root && strpos( $path, $root . '/' ) !== 0 ) ) {
+            $path = $root;
+        }
+
+        $qnap = new PhotoJob_QNAP_Client();
+        if ( ! $qnap->is_configured() ) {
+            wp_send_json_error( array( 'message' => __( 'QNAP nie jest skonfigurowany (Ustawienia → QNAP).', 'photojob-organizer' ) ) );
+        }
+        if ( ! $qnap->login() ) {
+            wp_send_json_error( array( 'message' => __( 'Logowanie do QNAP: ', 'photojob-organizer' ) . $qnap->last_error ) );
+        }
+        $items = $qnap->get_list( $path );
+        $qnap->logout();
+        if ( $items === false ) {
+            wp_send_json_error( array( 'message' => $qnap->last_error ?: __( 'Nie można wylistować ścieżki.', 'photojob-organizer' ) ) );
+        }
+
+        $image_ext = array( 'jpg', 'jpeg', 'png', 'tif', 'tiff', 'webp', 'heic', 'avif', 'bmp' );
+        $folders = array();
+        $files = array();
+        foreach ( (array) $items as $it ) {
+            $name = $it['filename'] ?? '';
+            if ( $name === '' || $name === '.' || $name === '..' ) {
+                continue;
+            }
+            if ( ! empty( $it['isfolder'] ) ) {
+                $folders[] = $name;
+            } else {
+                $ext = strtolower( PhotoJob_QNAP_Client::get_ext( $name ) );
+                if ( in_array( $ext, $image_ext, true ) ) {
+                    $files[] = $name;
+                }
+            }
+        }
+        sort( $folders );
+        sort( $files );
+        wp_send_json_success( array(
+            'root'    => $root,
+            'path'    => $path,
+            'folders' => $folders,
+            'files'   => $files,
+        ) );
     }
 
     /** ============ ZAMÓWIENIA SPOZA SKLEPU (ręczne) ============ */
@@ -66,7 +126,7 @@ class PhotoJob_Orders_Dashboard {
         $email  = sanitize_email( wp_unslash( $_POST['client_email'] ?? '' ) );
         $phone  = sanitize_text_field( wp_unslash( $_POST['client_phone'] ?? '' ) );
         $amount = (float) str_replace( ',', '.', sanitize_text_field( wp_unslash( $_POST['amount'] ?? '0' ) ) );
-        $items_raw = sanitize_textarea_field( wp_unslash( $_POST['items'] ?? '' ) );
+        $items_in = json_decode( wp_unslash( $_POST['items'] ?? '[]' ), true );
         $note   = sanitize_textarea_field( wp_unslash( $_POST['note'] ?? '' ) );
 
         if ( $name === '' ) {
@@ -99,24 +159,29 @@ class PhotoJob_Orders_Dashboard {
             $order->set_customer_note( $note );
         }
 
-        // Pozycje: jedna linia = pozycja, opcjonalnie " x2" na końcu = ilość.
+        // Pozycje: zdjęcia wybrane z magazynu QNAP (plik + format + ilość).
+        // Meta w konwencji WAPF ze sklepu → Folder Builder dopasuje plik źródłowy
+        // po nazwie (bez rozszerzenia) i policzy ilość jak przy zamówieniach WWW.
         $added_items = 0;
-        foreach ( preg_split( '/\r\n|\r|\n/', $items_raw ) as $line ) {
-            $line = trim( $line );
-            if ( $line === '' ) {
+        $known_formats = PhotoJob_Folder_Builder::known_formats();
+        foreach ( (array) $items_in as $in ) {
+            if ( ! is_array( $in ) ) {
                 continue;
             }
-            $qty = 1;
-            if ( preg_match( '/^(.*?)\s*[x×]\s*(\d{1,3})$/u', $line, $m ) ) {
-                $line = trim( $m[1] );
-                $qty  = max( 1, (int) $m[2] );
-            }
-            if ( $line === '' ) {
+            $file   = sanitize_text_field( $in['file'] ?? '' );
+            $format = sanitize_text_field( $in['format'] ?? '' );
+            $qty    = max( 1, min( 999, absint( $in['qty'] ?? 1 ) ) );
+            if ( $file === '' || ! in_array( $format, $known_formats, true ) ) {
                 continue;
             }
             $item = new WC_Order_Item_Product();
-            $item->set_name( $line );
+            $item->set_name( PhotoJob_QNAP_Client::strip_ext( $file ) );
             $item->set_quantity( $qty );
+            // Celowo NIE przez __() — to odpowiednik etykiet pól WAPF w sklepie (dane, nie UI).
+            $item->add_meta_data( 'Wydruk odbitki', $format );
+            if ( $qty > 1 ) {
+                $item->add_meta_data( 'Ilość dodatkowych odbitek ' . $format, (string) ( $qty - 1 ) );
+            }
             $order->add_item( $item );
             $added_items++;
         }
@@ -558,18 +623,27 @@ class PhotoJob_Orders_Dashboard {
                 <span class="description" style="font-size:11px;margin-left:6px;"><?php _e( 'Telefon / mail / osobiście — trafia na listę jak każde inne, żeby nie zginęło przy pakowaniu.', 'photojob-organizer' ); ?></span>
             </div>
             <div id="pjo-manual-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100001;align-items:center;justify-content:center;">
-                <div style="background:#fff;border-radius:6px;padding:20px 24px;width:440px;max-width:92vw;max-height:90vh;overflow:auto;box-shadow:0 8px 40px rgba(0,0,0,.35);">
+                <div style="background:#fff;border-radius:6px;padding:20px 24px;width:620px;max-width:94vw;max-height:92vh;overflow:auto;box-shadow:0 8px 40px rgba(0,0,0,.35);">
                     <h2 style="margin:0 0 12px;">➕ <?php _e( 'Zamówienie spoza sklepu', 'photojob-organizer' ); ?></h2>
                     <p style="margin:4px 0;"><label><strong><?php _e( 'Imię i nazwisko *', 'photojob-organizer' ); ?></strong><br>
                         <input type="text" id="pjo-m-name" style="width:100%;"></label></p>
-                    <p style="margin:4px 0;"><label><?php _e( 'Email', 'photojob-organizer' ); ?><br>
-                        <input type="email" id="pjo-m-email" style="width:100%;"></label></p>
-                    <p style="margin:4px 0;"><label><?php _e( 'Telefon', 'photojob-organizer' ); ?><br>
-                        <input type="text" id="pjo-m-phone" style="width:100%;"></label></p>
-                    <p style="margin:4px 0;"><label><?php _e( 'Kwota (zł)', 'photojob-organizer' ); ?><br>
-                        <input type="text" id="pjo-m-amount" placeholder="0" style="width:120px;"></label></p>
-                    <p style="margin:4px 0;"><label><?php _e( 'Pozycje (jedna na linię, ilość jako „x2" na końcu)', 'photojob-organizer' ); ?><br>
-                        <textarea id="pjo-m-items" rows="4" style="width:100%;" placeholder="<?php esc_attr_e( "Odbitka 15x23 Zosia x3\nFolio BOX Kacper", 'photojob-organizer' ); ?>"></textarea></label></p>
+                    <div style="display:flex;gap:10px;">
+                        <p style="margin:4px 0;flex:1;"><label><?php _e( 'Email', 'photojob-organizer' ); ?><br>
+                            <input type="email" id="pjo-m-email" style="width:100%;"></label></p>
+                        <p style="margin:4px 0;flex:1;"><label><?php _e( 'Telefon', 'photojob-organizer' ); ?><br>
+                            <input type="text" id="pjo-m-phone" style="width:100%;"></label></p>
+                        <p style="margin:4px 0;"><label><?php _e( 'Kwota (zł)', 'photojob-organizer' ); ?><br>
+                            <input type="text" id="pjo-m-amount" placeholder="0" style="width:90px;"></label></p>
+                    </div>
+                    <div style="margin:8px 0 4px;">
+                        <strong><?php _e( 'Zdjęcia z magazynu (QNAP)', 'photojob-organizer' ); ?></strong>
+                        <span class="description" style="font-size:11px;"><?php _e( '— wejdź w folder sesji i dodaj zdjęcia; format+ilość ustawisz niżej.', 'photojob-organizer' ); ?></span>
+                        <div style="border:1px solid #c3c4c7;border-radius:4px;margin-top:4px;">
+                            <div id="pjo-m-crumb" style="padding:6px 10px;background:#f6f7f7;font-size:12px;border-bottom:1px solid #e0e0e0;"></div>
+                            <div id="pjo-m-list" style="max-height:200px;overflow:auto;padding:4px 10px;font-size:12px;line-height:1.9;">⏳…</div>
+                        </div>
+                        <div id="pjo-m-selected" style="margin-top:8px;"></div>
+                    </div>
                     <p style="margin:4px 0;"><label><?php _e( 'Uwagi', 'photojob-organizer' ); ?><br>
                         <textarea id="pjo-m-note" rows="2" style="width:100%;"></textarea></label></p>
                     <p style="margin:14px 0 0;display:flex;gap:10px;align-items:center;">
@@ -1025,13 +1099,103 @@ class PhotoJob_Orders_Dashboard {
                 loadBuildPreview(orderId, row.querySelector('.pjo-build-content'), true);
             });
 
-            // ===== Zamówienie spoza sklepu (modal) =====
+            // ===== Zamówienie spoza sklepu (modal + przeglądarka magazynu QNAP) =====
             var mModal = document.getElementById('pjo-manual-modal');
             var mBtn = document.getElementById('pjo-add-manual');
             if (mBtn && mModal) {
                 var mSave = document.getElementById('pjo-m-save');
                 var mRes = document.getElementById('pjo-m-result');
-                function mOpen(){ mModal.style.display = 'flex'; document.getElementById('pjo-m-name').focus(); }
+                var mCrumb = document.getElementById('pjo-m-crumb');
+                var mList = document.getElementById('pjo-m-list');
+                var mSelBox = document.getElementById('pjo-m-selected');
+                var mFormats = <?php echo wp_json_encode( array_values( PhotoJob_Folder_Builder::known_formats() ) ); ?>;
+                var mRoot = '', mPath = '', mLoaded = false;
+                var mSel = []; // [{file, dir, format, qty}]
+
+                function renderCrumb() {
+                    var html = '<a href="#" data-path="' + esc(mRoot) + '">🏠 Magazyn</a>';
+                    if (mPath.length > mRoot.length) {
+                        var rel = mPath.substring(mRoot.length + 1).split('/');
+                        var acc = mRoot;
+                        rel.forEach(function(seg) {
+                            acc += '/' + seg;
+                            html += ' / <a href="#" data-path="' + esc(acc) + '">' + esc(seg) + '</a>';
+                        });
+                    }
+                    mCrumb.innerHTML = html;
+                }
+                function browse(path) {
+                    mList.innerHTML = '⏳ Listuję…';
+                    var fd = new FormData();
+                    fd.append('action', 'pjo_manual_browse');
+                    fd.append('nonce', nonce);
+                    fd.append('path', path || '');
+                    fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
+                        .then(function(r){ return r.json(); })
+                        .then(function(j) {
+                            if (!j.success) { mList.innerHTML = '<span class="pjo-st-error">❌ ' + esc(j.data && j.data.message ? j.data.message : 'Błąd') + '</span>'; return; }
+                            mRoot = j.data.root; mPath = j.data.path;
+                            renderCrumb();
+                            var html = '';
+                            (j.data.folders || []).forEach(function(f) {
+                                html += '<div><a href="#" class="pjo-m-dir" data-path="' + esc(mPath + '/' + f) + '">📁 ' + esc(f) + '</a></div>';
+                            });
+                            (j.data.files || []).forEach(function(f) {
+                                html += '<div>🖼 ' + esc(f) + ' <button type="button" class="button button-small pjo-m-add" data-file="' + esc(f) + '" style="margin-left:6px;padding:0 6px;">➕ Dodaj</button></div>';
+                            });
+                            if (!html) html = '<em>Pusty folder (brak podfolderów i zdjęć).</em>';
+                            mList.innerHTML = html;
+                        })
+                        .catch(function(e){ mList.innerHTML = '<span class="pjo-st-error">❌ ' + esc(e.message) + '</span>'; });
+                }
+                mCrumb.addEventListener('click', function(e) {
+                    var a = e.target.closest ? e.target.closest('a[data-path]') : null;
+                    if (!a) return;
+                    e.preventDefault();
+                    browse(a.getAttribute('data-path'));
+                });
+                mList.addEventListener('click', function(e) {
+                    var dir = e.target.closest ? e.target.closest('.pjo-m-dir') : null;
+                    if (dir) { e.preventDefault(); browse(dir.getAttribute('data-path')); return; }
+                    var add = e.target.closest ? e.target.closest('.pjo-m-add') : null;
+                    if (add) {
+                        mSel.push({ file: add.getAttribute('data-file'), dir: mPath, format: mFormats[0] || '15x23', qty: 1 });
+                        renderSel();
+                    }
+                });
+                function renderSel() {
+                    if (!mSel.length) { mSelBox.innerHTML = ''; return; }
+                    var html = '<table style="width:100%;border-collapse:collapse;font-size:12px;">';
+                    html += '<tr><th style="text-align:left;padding:2px 4px;">Zdjęcie (' + mSel.length + ')</th><th style="text-align:left;padding:2px 4px;width:110px;">Format</th><th style="text-align:left;padding:2px 4px;width:70px;">Ilość</th><th style="width:30px;"></th></tr>';
+                    mSel.forEach(function(s, i) {
+                        html += '<tr style="border-top:1px solid #eee;">';
+                        html += '<td style="padding:2px 4px;" title="' + esc(s.dir) + '">🖼 ' + esc(s.file) + '</td>';
+                        html += '<td style="padding:2px 4px;"><select class="pjo-m-fmt" data-i="' + i + '">';
+                        mFormats.forEach(function(f) { html += '<option value="' + esc(f) + '"' + (f === s.format ? ' selected' : '') + '>' + esc(f) + '</option>'; });
+                        html += '</select></td>';
+                        html += '<td style="padding:2px 4px;"><input type="number" class="pjo-m-qty" data-i="' + i + '" value="' + s.qty + '" min="1" max="999" style="width:60px;"></td>';
+                        html += '<td style="padding:2px 4px;"><button type="button" class="button-link pjo-m-del" data-i="' + i + '" title="Usuń" style="color:#c92a2a;text-decoration:none;">✕</button></td>';
+                        html += '</tr>';
+                    });
+                    html += '</table>';
+                    mSelBox.innerHTML = html;
+                }
+                mSelBox.addEventListener('click', function(e) {
+                    var del = e.target.closest ? e.target.closest('.pjo-m-del') : null;
+                    if (del) { mSel.splice(parseInt(del.getAttribute('data-i'), 10), 1); renderSel(); }
+                });
+                mSelBox.addEventListener('change', function(e) {
+                    var i = parseInt(e.target.getAttribute('data-i') || '-1', 10);
+                    if (i < 0 || !mSel[i]) return;
+                    if (e.target.classList.contains('pjo-m-fmt')) mSel[i].format = e.target.value;
+                    if (e.target.classList.contains('pjo-m-qty')) mSel[i].qty = Math.max(1, Math.min(999, parseInt(e.target.value, 10) || 1));
+                });
+
+                function mOpen() {
+                    mModal.style.display = 'flex';
+                    document.getElementById('pjo-m-name').focus();
+                    if (!mLoaded) { mLoaded = true; browse(''); }
+                }
                 function mClose(){ mModal.style.display = 'none'; mRes.textContent = ''; }
                 mBtn.addEventListener('click', mOpen);
                 document.getElementById('pjo-m-cancel').addEventListener('click', mClose);
@@ -1047,7 +1211,7 @@ class PhotoJob_Orders_Dashboard {
                     fd.append('client_email', document.getElementById('pjo-m-email').value.trim());
                     fd.append('client_phone', document.getElementById('pjo-m-phone').value.trim());
                     fd.append('amount', document.getElementById('pjo-m-amount').value.trim() || '0');
-                    fd.append('items', document.getElementById('pjo-m-items').value);
+                    fd.append('items', JSON.stringify(mSel));
                     fd.append('note', document.getElementById('pjo-m-note').value);
                     fetch(ajaxUrl, { method:'POST', credentials:'same-origin', body:fd })
                         .then(function(r){ return r.json(); })

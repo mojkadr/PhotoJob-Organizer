@@ -701,7 +701,7 @@ class PhotoJob_Folder_Builder {
      *
      * @return string[]
      */
-    private static function known_formats() {
+    public static function known_formats() {
         $opt = get_option( 'pjo_settings_qnap', array() );
         $formats = ( ! empty( $opt['print_formats'] ) && is_array( $opt['print_formats'] ) )
             ? $opt['print_formats']
